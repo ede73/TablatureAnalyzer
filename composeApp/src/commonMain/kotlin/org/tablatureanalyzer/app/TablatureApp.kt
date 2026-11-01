@@ -34,6 +34,9 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.isMetaPressed
+import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
@@ -58,6 +61,7 @@ private val muted = Color(0xFFA5B0AB)
 private val highlight = Color(0xFF79C7B2)
 private val selection = Color(0xFF294A3F)
 private val error = Color(0xFFF29A90)
+private const val UNDO_HISTORY_LIMIT = 100
 
 private enum class MarkerPlacement { BAR, REPEAT_START, REPEAT_END }
 
@@ -65,13 +69,63 @@ private enum class MarkerPlacement { BAR, REPEAT_START, REPEAT_END }
 @OptIn(ExperimentalLayoutApi::class)
 fun TablatureApp(initialDocument: TabDocument? = null) {
     var document by remember { mutableStateOf(initialDocument ?: TabDocument(listOf(64, 59, 55, 50, 45, 40), emptyList())) }
+    var selectedEvent by remember { mutableIntStateOf(-1) }
+    var selectedString by remember { mutableIntStateOf(-1) }
+    var playheadEventIndex by remember { mutableIntStateOf(0) }
+    var selectedPlaybackRange by remember { mutableStateOf<IntRange?>(null) }
+    var undoHistory by remember { mutableStateOf(emptyList<TabDocument>()) }
+    var redoHistory by remember { mutableStateOf(emptyList<TabDocument>()) }
+    var lastUndoCoalesceKey by remember { mutableStateOf<String?>(null) }
+    var historyResetRequestId by remember { mutableIntStateOf(0) }
+    fun updateDocument(next: TabDocument, coalesceKey: String? = null) {
+        if (next == document) return
+        if (coalesceKey == null || coalesceKey != lastUndoCoalesceKey) {
+            undoHistory = (undoHistory + document).takeLast(UNDO_HISTORY_LIMIT)
+        }
+        redoHistory = emptyList()
+        lastUndoCoalesceKey = coalesceKey
+        document = next
+    }
+    fun loadDocument(next: TabDocument) {
+        document = next
+        undoHistory = emptyList()
+        redoHistory = emptyList()
+        lastUndoCoalesceKey = null
+        historyResetRequestId += 1
+        selectedEvent = -1
+        selectedString = -1
+        playheadEventIndex = 0
+        selectedPlaybackRange = null
+    }
+    fun undoDocument() {
+        val previous = undoHistory.lastOrNull() ?: return
+        undoHistory = undoHistory.dropLast(1)
+        redoHistory = (redoHistory + document).takeLast(UNDO_HISTORY_LIMIT)
+        lastUndoCoalesceKey = null
+        document = previous
+        historyResetRequestId += 1
+        selectedEvent = -1
+        selectedString = -1
+        playheadEventIndex = playheadEventIndex.coerceIn(0, previous.events.lastIndex.coerceAtLeast(0))
+        selectedPlaybackRange = null
+    }
+    fun redoDocument() {
+        val next = redoHistory.lastOrNull() ?: return
+        redoHistory = redoHistory.dropLast(1)
+        undoHistory = (undoHistory + document).takeLast(UNDO_HISTORY_LIMIT)
+        lastUndoCoalesceKey = null
+        document = next
+        historyResetRequestId += 1
+        selectedEvent = -1
+        selectedString = -1
+        playheadEventIndex = playheadEventIndex.coerceIn(0, next.events.lastIndex.coerceAtLeast(0))
+        selectedPlaybackRange = null
+    }
     val storedTempo = document.tempoChanges.firstOrNull { it.eventIndex == 0 }?.beatsPerMinute ?: 120
     var tempoInput by remember { mutableStateOf(storedTempo.toString()) }
     LaunchedEffect(storedTempo) {
         if (tempoInput.toIntOrNull() != storedTempo) tempoInput = storedTempo.toString()
     }
-    var selectedEvent by remember { mutableIntStateOf(-1) }
-    var selectedString by remember { mutableIntStateOf(-1) }
     var page by remember { mutableIntStateOf(0) }
     var defaultNaming by remember {
         mutableStateOf(ChordNamingSystem.values().firstOrNull { it.name == PlatformPreferences.get("defaultNaming") } ?: ChordNamingSystem.US)
@@ -93,8 +147,6 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
     var importText by remember { mutableStateOf("") }
     var importError by remember { mutableStateOf<String?>(null) }
     var playingEventIndex by remember { mutableIntStateOf(-1) }
-    var playheadEventIndex by remember { mutableIntStateOf(0) }
-    var selectedPlaybackRange by remember { mutableStateOf<IntRange?>(null) }
     var durationEditedEventIndex by remember { mutableIntStateOf(-1) }
     var durationPreviewRequestId by remember { mutableIntStateOf(0) }
     val chordDatabase = ChordDatabase.BuiltIn
@@ -112,7 +164,18 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
         onSurfaceVariant = muted,
         outline = line
     )) {
-        Column(Modifier.fillMaxSize().background(paper).padding(horizontal = 18.dp, vertical = 14.dp)) {
+        Column(
+            Modifier.fillMaxSize().background(paper).padding(horizontal = 18.dp, vertical = 14.dp)
+                .onKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown || (!event.isMetaPressed && !event.isCtrlPressed)) false
+                    else when {
+                        event.key == Key.Z && event.isShiftPressed && redoHistory.isNotEmpty() -> { redoDocument(); true }
+                        event.key == Key.Z && !event.isShiftPressed && undoHistory.isNotEmpty() -> { undoDocument(); true }
+                        event.key == Key.Y && redoHistory.isNotEmpty() -> { redoDocument(); true }
+                        else -> false
+                    }
+                }
+        ) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TabRow(selectedTabIndex = page, modifier = Modifier.weight(1f)) {
                     listOf("Tab editor", "Scales", "Chords").forEachIndexed { i, label ->
@@ -129,16 +192,18 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     itemVerticalAlignment = Alignment.CenterVertically
                 ) {
-                    PlatformOpenTabButton(onText = { text -> document = TabCodec.parse(text); selectedEvent = -1; selectedString = -1; playheadEventIndex = 0; selectedPlaybackRange = null })
+                    PlatformOpenTabButton(onText = { text -> loadDocument(TabCodec.parse(text)) })
                     OutlinedButton(onClick = { showImport = true }) { Text("Paste") }
                     PlatformSaveProjectButton(TabCodec.encodeInternal(document))
                     PlatformSaveMusicXmlButton(MusicXmlCodec.encode(document))
+                    OutlinedButton(onClick = ::undoDocument, enabled = undoHistory.isNotEmpty()) { Text("↶ Undo") }
+                    OutlinedButton(onClick = ::redoDocument, enabled = redoHistory.isNotEmpty()) { Text("↷ Redo") }
                     OutlinedTextField(
                         value = tempoInput,
                         onValueChange = { value ->
                             tempoInput = value.filter(Char::isDigit).take(3)
                             tempoInput.toIntOrNull()?.takeIf { it in 20..400 }?.let { bpm ->
-                                document = document.copy(tempoChanges = listOf(TabTempoChange(0, bpm)) + document.tempoChanges.filter { it.eventIndex > 0 })
+                                updateDocument(document.copy(tempoChanges = listOf(TabTempoChange(0, bpm)) + document.tempoChanges.filter { it.eventIndex > 0 }), "tempo")
                             }
                         },
                         modifier = Modifier.width(90.dp),
@@ -156,22 +221,22 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
             }
             Spacer(Modifier.height(6.dp))
             if (page == 0) {
-                EditorPage(document, selectedEvent, selectedString, playingEventIndex, playheadEventIndex, tabNaming, tabNamingOverride, { tabNamingOverride = it }, onSetPlaybackStart = { playheadEventIndex = it }, onPlaybackSelectionChanged = { selectedPlaybackRange = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
+                EditorPage(document, selectedEvent, selectedString, playingEventIndex, playheadEventIndex, historyResetRequestId, tabNaming, tabNamingOverride, { tabNamingOverride = it }, onSetPlaybackStart = { playheadEventIndex = it }, onPlaybackSelectionChanged = { selectedPlaybackRange = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
                     val updated = moveNote(document, event, from, target)
-                    if (updated !== document) {
-                        document = updated
+                    if (updated != document) {
+                        updateDocument(updated)
                         selectedEvent = event
                         selectedString = target
                     }
                 }, onSetFret = { event, string, fret ->
-                    document = setNoteFret(document, event, string, fret)
+                    updateDocument(setNoteFret(document, event, string, fret))
                 }, onMoveDirection = { selection, direction ->
                     val notesToMove = selection.ifEmpty {
                         if (selectedEvent >= 0 && selectedString >= 0) setOf(NotePosition(selectedEvent, selectedString)) else emptySet()
                     }
                     val result = moveNotesInDirection(document, notesToMove, direction)
                     if (result.applied) {
-                        document = result.document
+                        updateDocument(result.document)
                         result.movedSelection.singleOrNull()?.let { moved ->
                             selectedEvent = moved.eventIndex
                             selectedString = moved.stringIndex
@@ -179,48 +244,50 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                     }
                     if (result.applied) result.movedSelection else selection
                 }, onAdd = { event, string, fret, lengthCode ->
-                    document = addNoteAt(document, event, string, fret, lengthCode)
+                    updateDocument(addNoteAt(document, event, string, fret, lengthCode))
                     selectedEvent = event.coerceIn(0, document.events.lastIndex.coerceAtLeast(0))
                     selectedString = string
                 }, onSetLength = { positions, code ->
-                    document = setNoteLengthsAt(document, positions, code)
+                    updateDocument(setNoteLengthsAt(document, positions, code))
                     durationEditedEventIndex = selectedEvent.takeIf { eventIndex -> eventIndex >= 0 && positions.any { it.eventIndex == eventIndex } }
                         ?: positions.minOfOrNull { it.eventIndex }
                         ?: -1
                     durationPreviewRequestId += 1
                 }, onConvertToRest = { eventIndices ->
-                    document = convertEventsToRests(document, eventIndices)
+                    updateDocument(convertEventsToRests(document, eventIndices))
                     selectedEvent = -1
                     selectedString = -1
                 }, onRemoveRest = { eventIndex ->
-                    document = removeRestAt(document, eventIndex)
+                    updateDocument(removeRestAt(document, eventIndex))
                 }, onSetRestLength = { eventIndex, code ->
-                    document = setRestLengthAt(document, eventIndex, code)
+                    updateDocument(setRestLengthAt(document, eventIndex, code))
                     durationEditedEventIndex = eventIndex
                     durationPreviewRequestId += 1
                 }, onRemoveBar = { eventIndex ->
-                    document = removeMeasureMarker(document, eventIndex)
+                    updateDocument(removeMeasureMarker(document, eventIndex))
                 }, onAddBar = { eventIndex ->
-                    document = addMeasureBar(document, eventIndex)
+                    updateDocument(addMeasureBar(document, eventIndex))
                 }, onAddRepeatStart = { eventIndex ->
-                    document = addRepeatStart(document, eventIndex)
+                    updateDocument(addRepeatStart(document, eventIndex))
                 }, onAddRepeatEnd = { eventIndex ->
-                    document = addRepeatEnd(document, eventIndex)
+                    updateDocument(addRepeatEnd(document, eventIndex))
                 }, onAdjustRepeatCount = { eventIndex, delta ->
-                    document = adjustRepeatCount(document, eventIndex, delta)
+                    updateDocument(adjustRepeatCount(document, eventIndex, delta), "repeat-count-$eventIndex")
                 }, onMoveBar = { fromEvent, toEvent ->
                     val moved = moveMeasureBar(document, fromEvent, toEvent)
                     val didMove = moved != document
-                    document = moved
+                    updateDocument(moved)
                     didMove
                 }, onDelete = {
-                    document = deleteNoteAt(document, selectedEvent, selectedString)
+                    updateDocument(deleteNoteAt(document, selectedEvent, selectedString))
                     selectedEvent = selectedEvent.coerceAtMost(document.events.lastIndex)
                     selectedString = -1
                 }, onGroupTransform = { request ->
                     val result = applyGroupFretOperation(document, request)
                     if (result.applied) {
-                        document = result.document
+                        val coalesceKey = request.operation.takeIf { it != GroupFretOperation.TRANSPOSE }
+                            ?.let { "fret-range-$it" }
+                        updateDocument(result.document, coalesceKey)
                         selectedEvent = -1
                         selectedString = -1
                     }
@@ -249,10 +316,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                     }
                 }, confirmButton = { Button(onClick = {
                     runCatching { TabCodec.parse(importText) }.onSuccess { parsed ->
-                        document = parsed
-                        selectedEvent = -1; selectedString = -1
-                        playheadEventIndex = 0
-                        selectedPlaybackRange = null
+                        loadDocument(parsed)
                         importText = ""
                         importError = null
                         showImport = false
@@ -287,7 +351,7 @@ private fun NamingSelector(
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
+private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
     val textMeasurer = rememberTextMeasurer()
     var dragTargetString by remember { mutableIntStateOf(-1) }
     var dragTargetFret by remember { mutableIntStateOf(-1) }
@@ -299,6 +363,13 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
     var groupTransformMessage by remember { mutableStateOf("") }
     var selectedNotes by remember { mutableStateOf(emptySet<NotePosition>()) }
     var selectedRestEvent by remember { mutableIntStateOf(-1) }
+    var selectedBarEvent by remember { mutableIntStateOf(-1) }
+    LaunchedEffect(historyResetRequestId) {
+        selectedNotes = emptySet()
+        selectedRestEvent = -1
+        selectedBarEvent = -1
+        onSelect(-1, -1)
+    }
     LaunchedEffect(selectedRestEvent, document.events) {
         if (selectedRestEvent >= 0 && document.events.getOrNull(selectedRestEvent)?.restDurationUnits == null) {
             selectedRestEvent = -1
@@ -324,7 +395,6 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
         }
     }
     var selectionRect by remember { mutableStateOf<Rect?>(null) }
-    var selectedBarEvent by remember { mutableIntStateOf(-1) }
     var markerPlacement by remember { mutableStateOf<MarkerPlacement?>(null) }
     var addNoteMode by remember { mutableStateOf(false) }
     var selectedLengthCode by remember { mutableIntStateOf(5) }
