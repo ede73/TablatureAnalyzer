@@ -266,6 +266,21 @@ fun addNoteAt(document: TabDocument, eventIndex: Int, stringIndex: Int, fret: In
     return document.copy(events = events)
 }
 
+/** Map a live set of MIDI pitches to one playable simultaneous tab position. */
+fun tabEventForPitches(tuning: List<Int>, pitches: List<Int>): TabEvent? {
+    if (tuning.isEmpty() || pitches.isEmpty()) return null
+    val frets = MutableList<Int?>(tuning.size) { null }
+    pitches.distinct().sortedDescending().forEach { pitch ->
+        val target = tuning.indices.asSequence()
+            .filter { frets[it] == null }
+            .map { string -> string to (pitch - tuning[string]) }
+            .filter { (_, fret) -> fret in 0..24 }
+            .minWithOrNull(compareBy<Pair<Int, Int>> { it.second }.thenBy { it.first })
+        if (target != null) frets[target.first] = target.second
+    }
+    return frets.takeIf { it.any { fret -> fret != null } }?.let { TabEvent(it) }
+}
+
 /** Set the legacy duration code for a selected note. */
 fun setNoteLengthAt(document: TabDocument, eventIndex: Int, stringIndex: Int, lengthCode: Int): TabDocument {
     val event = document.events.getOrNull(eventIndex) ?: return document

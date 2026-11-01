@@ -40,6 +40,15 @@ compose.desktop {
             packageName = "TablatureAnalyzer"
             packageVersion = "1.0.0"
             vendor = "ede73"
+            macOS {
+                entitlementsFile.set(project.file("macos/entitlements.plist"))
+                infoPlist {
+                    extraKeysRawXml = """
+                        <key>NSMicrophoneUsageDescription</key>
+                        <string>Tablature Analyzer listens to guitar audio to identify chords and add notes to tablature.</string>
+                    """.trimIndent()
+                }
+            }
         }
     }
 }

@@ -146,6 +146,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
     var showImport by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
     var importError by remember { mutableStateOf<String?>(null) }
+    var showNewTabConfirmation by remember { mutableStateOf(false) }
     var playingEventIndex by remember { mutableIntStateOf(-1) }
     var durationEditedEventIndex by remember { mutableIntStateOf(-1) }
     var durationPreviewRequestId by remember { mutableIntStateOf(0) }
@@ -192,6 +193,13 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                     verticalArrangement = Arrangement.spacedBy(6.dp),
                     itemVerticalAlignment = Alignment.CenterVertically
                 ) {
+                    OutlinedButton(onClick = {
+                        val hasContent = document.events.isNotEmpty() ||
+                            document.tempoChanges != listOf(TabTempoChange(0, 120)) ||
+                            document.timeSignatures != listOf(TabTimeSignatureChange(0, 4, 4))
+                        if (hasContent) showNewTabConfirmation = true
+                        else loadDocument(TabDocument(document.tuning, emptyList()))
+                    }) { Text("New") }
                     PlatformOpenTabButton(onText = { text -> loadDocument(TabCodec.parse(text)) })
                     OutlinedButton(onClick = { showImport = true }) { Text("Paste") }
                     PlatformSaveProjectButton(TabCodec.encodeInternal(document))
@@ -217,6 +225,17 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                         playheadEventIndex,
                         selectedPlaybackRange
                     ) { eventIndex -> playingEventIndex = eventIndex ?: -1 }
+                }
+            }
+            if (page == 0) {
+                Spacer(Modifier.height(4.dp))
+                GuitarInputPanel(GuitarInputMode.TAB_RECORD, document.tuning, tabNaming) { pitches ->
+                    val event = tabEventForPitches(document.tuning, pitches) ?: return@GuitarInputPanel
+                    val eventIndex = document.events.size
+                    updateDocument(document.copy(events = document.events + event))
+                    selectedEvent = eventIndex
+                    selectedString = event.frets.indexOfFirst { it != null }
+                    playheadEventIndex = eventIndex
                 }
             }
             Spacer(Modifier.height(6.dp))
@@ -322,6 +341,20 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                         showImport = false
                     }.onFailure { importError = it.message ?: "Could not read this tab." }
                 }, enabled = importText.isNotBlank()) { Text("Load") } }, dismissButton = { TextButton(onClick = { showImport = false }) { Text("Cancel") } })
+        }
+        if (showNewTabConfirmation) {
+            AlertDialog(
+                onDismissRequest = { showNewTabConfirmation = false },
+                title = { Text("Start a new tab?") },
+                text = { Text("Clear the current notes, bars, repeats, and tempo changes? The current tuning will be kept.") },
+                confirmButton = {
+                    Button(onClick = {
+                        loadDocument(TabDocument(document.tuning, emptyList()))
+                        showNewTabConfirmation = false
+                    }) { Text("Clear tab") }
+                },
+                dismissButton = { TextButton(onClick = { showNewTabConfirmation = false }) { Text("Cancel") } }
+            )
         }
     }
 }
@@ -1347,6 +1380,10 @@ private fun ChordPage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
         chordQuery = identifyChord(notes)?.name(naming).orEmpty()
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        GuitarInputPanel(GuitarInputMode.CHORD_GUESS, tuning, naming) { pitches ->
+            val pitchClasses = pitches.map { ((it % 12) + 12) % 12 }.toSet()
+            identifyChord(pitchClasses)?.let { chordQuery = it.name(naming) }
+        }
         ChordBuilderCard(tuning, selectedFrets, selectedPitchClasses, detectedChord, chordQuery, { chordQuery = it }, naming, namingOverride, onNamingOverride,
             onFretsChanged = changeBuilderFrets,
             possibilities = detectedPossibilities,
