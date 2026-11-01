@@ -57,6 +57,10 @@ object MusicXmlCodec {
             }
 
             rows.forEach { (eventIndex, event) ->
+                if (event.repeatStartBefore) {
+                    val location = if (eventIndex == firstEventIndex) "left" else "middle"
+                    sb.append("      <barline location=\"").append(location).append("\"><bar-style>heavy-light</bar-style><repeat direction=\"forward\"/></barline>\n")
+                }
                 signatures[eventIndex]?.let { signature ->
                     if (eventIndex != firstEventIndex) {
                         currentSignature = signature
@@ -89,7 +93,13 @@ object MusicXmlCodec {
                 }
             }
             if (rows.lastOrNull()?.second?.barAfter == true) {
-                sb.append("      <barline location=\"right\"><bar-style>regular</bar-style></barline>\n")
+                val ending = rows.last().second
+                if (ending.repeatEndAfter) {
+                    sb.append("      <barline location=\"right\"><bar-style>light-heavy</bar-style><repeat direction=\"backward\" times=\"")
+                        .append(ending.repeatCount.coerceIn(2, 16)).append("\"/></barline>\n")
+                } else {
+                    sb.append("      <barline location=\"right\"><bar-style>regular</bar-style></barline>\n")
+                }
             }
             sb.append("    </measure>\n")
         }
@@ -110,6 +120,13 @@ object MusicXmlCodec {
         val signatures = mutableListOf<TabTimeSignatureChange>()
 
         part.children("measure").forEach { measure ->
+            val repeatStarts = measure.children("barline").any { barline ->
+                barline.child("repeat")?.attributes?.get("direction") == "forward"
+            }
+            val repeatEnd = measure.children("barline").firstOrNull { barline ->
+                barline.child("repeat")?.attributes?.get("direction") == "backward"
+            }?.child("repeat")
+            val repeatCount = repeatEnd?.attributes?.get("times")?.toIntOrNull()?.coerceIn(2, 16) ?: 2
             measure.child("attributes")?.let { attributes ->
                 attributes.child("divisions")?.intText()?.takeIf { it > 0 }?.let { divisions = it }
                 attributes.child("time")?.let { time ->
@@ -185,7 +202,9 @@ object MusicXmlCodec {
             orderedDrafts.forEach { (_, draft) ->
                 events += TabEvent(draft.frets, draft.actions, false, draft.lengthCodes, draft.durationUnits, draft.restDuration)
             }
-            if (events.size > firstNewEvent) events[events.lastIndex] = events.last().copy(barAfter = true)
+            if (events.size == firstNewEvent) events += TabEvent(List(tuning.size) { null })
+            events[firstNewEvent] = events[firstNewEvent].copy(repeatStartBefore = repeatStarts)
+            events[events.lastIndex] = events.last().copy(barAfter = true, repeatEndAfter = repeatEnd != null, repeatCount = repeatCount)
             runningUnits += measureUnits
         }
 

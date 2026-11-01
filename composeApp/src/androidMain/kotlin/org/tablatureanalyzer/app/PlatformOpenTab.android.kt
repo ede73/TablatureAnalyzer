@@ -14,7 +14,7 @@ actual fun PlatformOpenTabButton(onText: (String) -> Unit) {
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } }.getOrNull()?.let(onText)
     }
-    OutlinedButton(onClick = { picker.launch(arrayOf("text/*", "application/octet-stream", "application/xml", "application/vnd.recordare.musicxml+xml")) }) { Text("Choose file") }
+    OutlinedButton(onClick = { picker.launch(arrayOf("text/*", "application/octet-stream", "application/xml", "application/vnd.recordare.musicxml+xml")) }) { Text("Open") }
 }
 
 @Composable
@@ -26,4 +26,15 @@ actual fun PlatformSaveMusicXmlButton(contents: String) {
         }
     }
     Button(onClick = { save.launch("tablature.musicxml") }) { Text("Save MusicXML") }
+}
+
+@Composable
+actual fun PlatformSaveProjectButton(contents: String) {
+    val context = LocalContext.current
+    val save = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+        if (uri != null) runCatching {
+            context.contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { it.write(contents) }
+        }
+    }
+    Button(onClick = { save.launch("tablature.ta") }) { Text("Save editable") }
 }

@@ -6,11 +6,15 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.drag
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
@@ -28,17 +32,35 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlin.math.roundToInt
 
-private val ink = Color(0xFF18211F)
-private val green = Color(0xFF236957)
-private val paper = Color(0xFFF5F4EF)
+private val ink = Color(0xFFE6ECE9)
+private val green = Color(0xFF69C5A7)
+private val paper = Color(0xFF121715)
+private val surface = Color(0xFF1B2220)
+private val surfaceRaised = Color(0xFF252F2B)
+private val line = Color(0xFF74827D)
+private val muted = Color(0xFFA5B0AB)
+private val highlight = Color(0xFF79C7B2)
+private val selection = Color(0xFF294A3F)
+private val error = Color(0xFFF29A90)
+
+private enum class MarkerPlacement { BAR, REPEAT_START, REPEAT_END }
 
 @Composable
+@OptIn(ExperimentalLayoutApi::class)
 fun TablatureApp(initialDocument: TabDocument? = null) {
     var document by remember { mutableStateOf(initialDocument ?: TabDocument(listOf(64, 59, 55, 50, 45, 40), emptyList())) }
+    val storedTempo = document.tempoChanges.firstOrNull { it.eventIndex == 0 }?.beatsPerMinute ?: 120
+    var tempoInput by remember { mutableStateOf(storedTempo.toString()) }
+    LaunchedEffect(storedTempo) {
+        if (tempoInput.toIntOrNull() != storedTempo) tempoInput = storedTempo.toString()
+    }
     var selectedEvent by remember { mutableIntStateOf(-1) }
     var selectedString by remember { mutableIntStateOf(-1) }
     var page by remember { mutableIntStateOf(0) }
@@ -60,10 +82,23 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
     }
     var showImport by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
+    var importError by remember { mutableStateOf<String?>(null) }
     var playingEventIndex by remember { mutableIntStateOf(-1) }
     val chordDatabase = ChordDatabase.BuiltIn
     val chordDatabaseLoaded = true
-    MaterialTheme(colorScheme = lightColorScheme(primary = green, background = paper, surface = paper)) {
+    MaterialTheme(colorScheme = darkColorScheme(
+        primary = green,
+        onPrimary = paper,
+        secondary = highlight,
+        onSecondary = paper,
+        background = paper,
+        onBackground = ink,
+        surface = surface,
+        onSurface = ink,
+        surfaceVariant = surfaceRaised,
+        onSurfaceVariant = muted,
+        outline = line
+    )) {
         Column(Modifier.fillMaxSize().background(paper).padding(horizontal = 18.dp, vertical = 14.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TabRow(selectedTabIndex = page, modifier = Modifier.weight(1f)) {
@@ -75,18 +110,42 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
             }
             if (page == 0) {
                 Spacer(Modifier.height(6.dp))
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlowRow(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                    itemVerticalAlignment = Alignment.CenterVertically
+                ) {
                     PlatformOpenTabButton(onText = { text -> document = TabCodec.parse(text); selectedEvent = -1; selectedString = -1 })
-                    OutlinedButton(onClick = { showImport = true }) { Text("Open / paste tab") }
+                    OutlinedButton(onClick = { showImport = true }) { Text("Paste") }
+                    PlatformSaveProjectButton(TabCodec.encodeInternal(document))
                     PlatformSaveMusicXmlButton(MusicXmlCodec.encode(document))
+                    OutlinedTextField(
+                        value = tempoInput,
+                        onValueChange = { value ->
+                            tempoInput = value.filter(Char::isDigit).take(3)
+                            tempoInput.toIntOrNull()?.takeIf { it in 20..400 }?.let { bpm ->
+                                document = document.copy(tempoChanges = listOf(TabTempoChange(0, bpm)) + document.tempoChanges.filter { it.eventIndex > 0 })
+                            }
+                        },
+                        modifier = Modifier.width(90.dp),
+                        label = { Text("BPM") },
+                        singleLine = true
+                    )
                     PlatformMidiPlayerButton(document) { eventIndex -> playingEventIndex = eventIndex ?: -1 }
                 }
             }
             Spacer(Modifier.height(6.dp))
             if (page == 0) {
-                EditorPage(document, selectedEvent, selectedString, playingEventIndex, tabNaming, tabNamingOverride, { tabNamingOverride = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { target ->
-                    document = moveNote(document, selectedEvent, selectedString, target)
-                    selectedString = target
+                EditorPage(document, selectedEvent, selectedString, playingEventIndex, tabNaming, tabNamingOverride, { tabNamingOverride = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
+                    val updated = moveNote(document, event, from, target)
+                    if (updated !== document) {
+                        document = updated
+                        selectedEvent = event
+                        selectedString = target
+                    }
+                }, onSetFret = { event, string, fret ->
+                    document = setNoteFret(document, event, string, fret)
                 }, onMoveDirection = { selection, direction ->
                     val notesToMove = selection.ifEmpty {
                         if (selectedEvent >= 0 && selectedString >= 0) setOf(NotePosition(selectedEvent, selectedString)) else emptySet()
@@ -104,23 +163,23 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                     document = addNoteAt(document, event, string, fret, lengthCode)
                     selectedEvent = event.coerceIn(0, document.events.lastIndex.coerceAtLeast(0))
                     selectedString = string
-                }, onAddPosition = {
-                    document = addTabPosition(document)
-                    selectedEvent = document.events.lastIndex
-                    selectedString = -1
-                }, onSetLength = { code ->
-                    document = setNoteLengthAt(document, selectedEvent, selectedString, code)
+                }, onSetLength = { positions, code ->
+                    document = setNoteLengthsAt(document, positions, code)
                 }, onRemoveBar = { eventIndex ->
-                    document = removeMeasureBar(document, eventIndex)
+                    document = removeMeasureMarker(document, eventIndex)
                 }, onAddBar = { eventIndex ->
                     document = addMeasureBar(document, eventIndex)
+                }, onAddRepeatStart = { eventIndex ->
+                    document = addRepeatStart(document, eventIndex)
+                }, onAddRepeatEnd = { eventIndex ->
+                    document = addRepeatEnd(document, eventIndex)
+                }, onAdjustRepeatCount = { eventIndex, delta ->
+                    document = adjustRepeatCount(document, eventIndex, delta)
                 }, onMoveBar = { fromEvent, toEvent ->
                     val moved = moveMeasureBar(document, fromEvent, toEvent)
                     val didMove = moved != document
                     document = moved
                     didMove
-                }, onSetTempo = { bpm ->
-                    document = document.copy(tempoChanges = listOf(TabTempoChange(0, bpm)) + document.tempoChanges.filter { it.eventIndex > 0 })
                 }, onDelete = {
                     document = deleteNoteAt(document, selectedEvent, selectedString)
                     selectedEvent = selectedEvent.coerceAtMost(document.events.lastIndex)
@@ -141,19 +200,29 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
             }
         }
         if (showImport) {
-            AlertDialog(onDismissRequest = { showImport = false }, title = { Text("Open MusicXML, tab, or project") },
+            AlertDialog(onDismissRequest = { showImport = false }, title = { Text("Paste tab, MusicXML, or project") },
                 text = {
                     Column {
-                        Text("Paste a MusicXML score, ASCII .tab file, or TabAnalyzer .internal project. MusicXML imports guitar string/fret data, timing, measures and supported techniques.", fontSize = 13.sp)
-                        Spacer(Modifier.height(10.dp))
-                        BasicTextField(value = importText, onValueChange = { importText = it }, modifier = Modifier.fillMaxWidth().height(210.dp).background(Color.White, RoundedCornerShape(8.dp)).padding(10.dp).verticalScroll(rememberScrollState()), textStyle = LocalTextStyle.current.copy(color = ink, fontSize = 13.sp))
+                        Box(Modifier.fillMaxWidth().height(132.dp).background(surfaceRaised, RoundedCornerShape(8.dp)).padding(10.dp)) {
+                            if (importText.isEmpty()) Text("Paste tab text here", color = muted, fontSize = 13.sp)
+                            BasicTextField(
+                                value = importText,
+                                onValueChange = { importText = it; importError = null },
+                                modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+                                textStyle = LocalTextStyle.current.copy(color = ink, fontSize = 13.sp)
+                            )
+                        }
+                        importError?.let { Text(it, color = error, fontSize = 12.sp) }
                     }
                 }, confirmButton = { Button(onClick = {
-                    val parsed = TabCodec.parse(importText)
-                    document = parsed
-                    selectedEvent = -1; selectedString = -1
-                    showImport = false
-                }) { Text("Load") } }, dismissButton = { TextButton(onClick = { showImport = false }) { Text("Cancel") } })
+                    runCatching { TabCodec.parse(importText) }.onSuccess { parsed ->
+                        document = parsed
+                        selectedEvent = -1; selectedString = -1
+                        importText = ""
+                        importError = null
+                        showImport = false
+                    }.onFailure { importError = it.message ?: "Could not read this tab." }
+                }, enabled = importText.isNotBlank()) { Text("Load") } }, dismissButton = { TextButton(onClick = { showImport = false }) { Text("Cancel") } })
         }
     }
 }
@@ -182,86 +251,184 @@ private fun NamingSelector(
 }
 
 @Composable
-private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onAddPosition: () -> Unit, onSetLength: (Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onSetTempo: (Int) -> Unit, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
+@OptIn(ExperimentalLayoutApi::class)
+private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
     val textMeasurer = rememberTextMeasurer()
     var dragTargetString by remember { mutableIntStateOf(-1) }
+    var dragTargetFret by remember { mutableIntStateOf(-1) }
+    var heldNote by remember { mutableStateOf<NotePosition?>(null) }
     var minimumFret by remember { mutableStateOf("0") }
     var maximumFret by remember { mutableStateOf("12") }
     var transposeSemitones by remember { mutableStateOf("0") }
     var groupTransformMessage by remember { mutableStateOf("") }
     var selectedNotes by remember { mutableStateOf(emptySet<NotePosition>()) }
+    LaunchedEffect(selectedNotes, document) {
+        val frets = selectedNotes.mapNotNull { position ->
+            document.events.getOrNull(position.eventIndex)?.frets?.getOrNull(position.stringIndex)
+        }
+        if (frets.isNotEmpty()) {
+            minimumFret = frets.minOrNull().toString()
+            maximumFret = frets.maxOrNull().toString()
+        }
+    }
     var selectionRect by remember { mutableStateOf<Rect?>(null) }
     var selectedBarEvent by remember { mutableIntStateOf(-1) }
-    var addBarMode by remember { mutableStateOf(false) }
-    var tempoInput by remember(document.tempoChanges) { mutableStateOf((document.tempoChanges.firstOrNull { it.eventIndex == 0 }?.beatsPerMinute ?: 120).toString()) }
+    var markerPlacement by remember { mutableStateOf<MarkerPlacement?>(null) }
     var addNoteMode by remember { mutableStateOf(false) }
-    var fretToAdd by remember { mutableStateOf("0") }
     var selectedLengthCode by remember { mutableIntStateOf(5) }
     var showLengthMenu by remember { mutableStateOf(false) }
-    Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
-            Column(Modifier.fillMaxWidth().padding(16.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text("TAB VIEW", fontSize = 11.sp, color = green, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-                        if (document.events.isEmpty()) Text("Open a tab file to start", fontSize = 19.sp, color = ink, fontWeight = FontWeight.SemiBold)
-                    }
+    val staffScrollState = rememberScrollState()
+    var lastFollowedSystem by remember { mutableIntStateOf(-1) }
+    fun applyFretLimitEdit(operation: GroupFretOperation, input: String) {
+        val limit = input.toIntOrNull()?.takeIf { it in 0..36 } ?: return
+        if (selectedNotes.isEmpty()) return
+        val request = when (operation) {
+            GroupFretOperation.RAISE_MINIMUM -> GroupFretRequest(operation, limit, maximumFret.toIntOrNull() ?: -1, selectedNotes = selectedNotes)
+            GroupFretOperation.LOWER_MAXIMUM -> GroupFretRequest(operation, minimumFret.toIntOrNull() ?: -1, limit, selectedNotes = selectedNotes)
+            GroupFretOperation.TRANSPOSE -> return
+        }
+        val result = onGroupTransform(request)
+        groupTransformMessage = result.message
+        if (result.applied) selectedNotes = result.movedSelection
+    }
+    Column(Modifier.fillMaxSize()) {
+        Card(
+            modifier = Modifier.weight(1f),
+            colors = CardDefaults.cardColors(containerColor = surface),
+            shape = RoundedCornerShape(16.dp)
+        ) {
+            Column(Modifier.fillMaxWidth().verticalScroll(staffScrollState).padding(if (document.events.isEmpty()) 10.dp else 16.dp)) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                     NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
-                    Text("Tap a note, then choose its new string", fontSize = 12.sp, color = Color.Gray)
+                    Text("Drag up/down to change strings · left/right to change fret", fontSize = 12.sp, color = muted)
                 }
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(if (document.events.isEmpty()) 4.dp else 12.dp))
                 if (document.events.isEmpty()) {
-                    Box(Modifier.fillMaxWidth().height(220.dp).background(paper, RoundedCornerShape(12.dp)), Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("—  —  —  —  —  —", color = green, fontSize = 22.sp)
-                            Spacer(Modifier.height(8.dp)); Text("Open or paste a .tab file to begin", color = ink)
-                            Spacer(Modifier.height(8.dp))
-                            OutlinedButton(onClick = { onAdd(0, 0, fretToAdd.toIntOrNull()?.coerceIn(0, 36) ?: 0, selectedLengthCode) }) { Text("Add first note") }
+                    Canvas(
+                            Modifier.fillMaxWidth().height(maxOf(206.dp, 52.dp + 32.dp * (document.tuning.size - 1))).background(paper, RoundedCornerShape(12.dp))
+                                .pointerInput(addNoteMode, markerPlacement, selectedLengthCode, document.tuning) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        val string = ((down.position.y - 26.dp.toPx()) / 32.dp.toPx()).roundToInt().coerceIn(0, document.tuning.lastIndex)
+                                        val left = 38.dp.toPx()
+                                        val columnGap = 62.dp.toPx()
+                                        val event = (((down.position.x - left) / columnGap).roundToInt() - 1).coerceAtLeast(0)
+                                        when (markerPlacement) {
+                                            MarkerPlacement.BAR -> {
+                                                onAddBar(event)
+                                                selectedBarEvent = event
+                                                selectedNotes = emptySet()
+                                                markerPlacement = null
+                                            }
+                                            MarkerPlacement.REPEAT_START -> {
+                                                onAddRepeatStart(event)
+                                                selectedBarEvent = event
+                                                selectedNotes = emptySet()
+                                                markerPlacement = null
+                                            }
+                                            MarkerPlacement.REPEAT_END -> {
+                                                onAddRepeatEnd(event)
+                                                selectedBarEvent = event
+                                                selectedNotes = emptySet()
+                                                markerPlacement = null
+                                            }
+                                            null -> if (addNoteMode) {
+                                                onAdd(event, string, 0, selectedLengthCode)
+                                                selectedBarEvent = -1
+                                            } else {
+                                                selectedBarEvent = -1
+                                                onSelect(-1, -1)
+                                            }
+                                        }
+                                    }
+                                }
+                        ) {
+                            val rowGap = 32.dp.toPx()
+                            val left = 38.dp.toPx()
+                            document.tuning.forEachIndexed { string, _ ->
+                                val y = 26.dp.toPx() + rowGap * string
+                                drawLine(line, Offset(left, y), Offset(size.width - 8.dp.toPx(), y), strokeWidth = 1.4f)
+                                drawText(textMeasurer, listOf("e", noteName(11, naming), "G", "D", "A", "E").getOrElse(string) { "S${string + 1}" }, Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
+                            }
                         }
-                    }
                 } else {
                     BoxWithConstraints(Modifier.fillMaxWidth()) {
                         val density = LocalDensity.current
                         val colGapPx = with(density) { 62.dp.toPx() }
                         val leftPx = with(density) { 38.dp.toPx() }
                         val columnsPerSystem = ((constraints.maxWidth.toFloat() - leftPx - with(density) { 8.dp.toPx() }) / colGapPx).toInt().coerceAtLeast(1)
-                        val systems = (document.events.size + columnsPerSystem - 1) / columnsPerSystem
+                        val systems = ((document.events.size + columnsPerSystem - 1) / columnsPerSystem).coerceAtLeast(1)
                         val systemHeight = maxOf(206.dp, 52.dp + 32.dp * (document.tuning.size - 1))
-                        Canvas(Modifier.fillMaxWidth().height(systemHeight * systems).pointerInput(document, columnsPerSystem, addNoteMode, fretToAdd, selectedLengthCode) {
+                        LaunchedEffect(playingEventIndex, columnsPerSystem, systemHeight) {
+                            val activeSystem = if (playingEventIndex < 0) -1 else (playingEventIndex / columnsPerSystem).coerceIn(0, systems - 1)
+                            if (activeSystem < 0) {
+                                lastFollowedSystem = -1
+                            } else if (activeSystem != lastFollowedSystem) {
+                                lastFollowedSystem = activeSystem
+                                val systemHeightPx = with(density) { systemHeight.roundToPx() }
+                                val canvasTopPx = with(density) { 52.dp.roundToPx() }
+                                val systemTop = canvasTopPx + activeSystem * systemHeightPx
+                                val systemBottom = systemTop + systemHeightPx
+                                val viewportTop = staffScrollState.value
+                                val viewportBottom = viewportTop + staffScrollState.viewportSize
+                                val bottomClearance = with(density) { 24.dp.roundToPx() }
+                                val target = when {
+                                    systemTop < viewportTop -> systemTop
+                                    systemBottom > viewportBottom -> systemBottom - staffScrollState.viewportSize + bottomClearance
+                                    else -> viewportTop
+                                }.coerceAtLeast(0)
+                                if (target != viewportTop) staffScrollState.animateScrollTo(target)
+                            }
+                        }
+                        Canvas(Modifier.fillMaxWidth().height(systemHeight * systems).pointerInput(document, columnsPerSystem, addNoteMode, markerPlacement, selectedLengthCode) {
                                 awaitEachGesture {
                                     val down = awaitFirstDown(requireUnconsumed = false)
                                     val system = (down.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
                                     val localColumn = ((down.position.x - leftPx) / colGapPx).roundToInt() - 1
-                                    val startEvent = (system * columnsPerSystem + localColumn).coerceIn(0, document.events.lastIndex)
+                                    val rawEvent = system * columnsPerSystem + localColumn
+                                    val startEvent = if (addNoteMode || markerPlacement != null) rawEvent.coerceAtLeast(0) else rawEvent.coerceIn(0, document.events.lastIndex.coerceAtLeast(0))
                                     val localY = down.position.y - system * systemHeight.toPx()
                                     val startString = ((localY - 26.dp.toPx()) / (32.dp.toPx())).roundToInt().coerceIn(0, document.tuning.lastIndex)
-                                    if (addBarMode) {
-                                        onAddBar(startEvent)
+                                    markerPlacement?.let { placement ->
+                                        when (placement) {
+                                            MarkerPlacement.BAR -> onAddBar(startEvent)
+                                            MarkerPlacement.REPEAT_START -> onAddRepeatStart(startEvent)
+                                            MarkerPlacement.REPEAT_END -> onAddRepeatEnd(startEvent)
+                                        }
                                         selectedBarEvent = startEvent
                                         selectedNotes = emptySet()
                                         onSelect(-1, -1)
-                                        addBarMode = false
+                                        markerPlacement = null
                                         return@awaitEachGesture
                                     }
-                                    if (addNoteMode) {
-                                        onAdd(startEvent, startString, fretToAdd.toIntOrNull()?.coerceIn(0, 36) ?: 0, selectedLengthCode)
-                                        selectedNotes = emptySet()
-                                        selectedBarEvent = -1
-                                        addNoteMode = false
-                                        return@awaitEachGesture
-                                    }
-                                    val clickedBar = document.events.indices.firstOrNull { eventIndex ->
+                                    val clickedRepeatStart = document.events.indices.firstOrNull { eventIndex ->
                                         val event = document.events[eventIndex]
-                                        if (!event.barAfter) false else {
-                                            val eventSystem = eventIndex / columnsPerSystem
+                                        if (!event.repeatStartBefore) false else {
                                             val local = eventIndex % columnsPerSystem
-                                            val barX = leftPx + colGapPx * (local + 1) + colGapPx / 2
-                                            val localClickY = down.position.y - eventSystem * systemHeight.toPx()
+                                            val x = leftPx + colGapPx * (local + 1) - colGapPx / 2
+                                            val localClickY = down.position.y - (eventIndex / columnsPerSystem) * systemHeight.toPx()
                                             val lineBottom = minOf(214.dp.toPx(), systemHeight.toPx() - 4.dp.toPx())
-                                            kotlin.math.abs(down.position.x - barX) <= 12.dp.toPx() && localClickY in 8.dp.toPx()..lineBottom
+                                            kotlin.math.abs(down.position.x - x) <= 12.dp.toPx() && localClickY in 8.dp.toPx()..lineBottom
                                         }
                                     }
+                                    val clickedBar = clickedRepeatStart ?: document.events.indices.firstOrNull { eventIndex ->
+                                        val event = document.events[eventIndex]
+                                        val eventSystem = eventIndex / columnsPerSystem
+                                        val local = eventIndex % columnsPerSystem
+                                        val x = leftPx + colGapPx * (local + 1)
+                                        val localClickY = down.position.y - eventSystem * systemHeight.toPx()
+                                        val lineBottom = minOf(214.dp.toPx(), systemHeight.toPx() - 4.dp.toPx())
+                                        val withinLine = localClickY in 8.dp.toPx()..lineBottom
+                                        val onEnd = (event.barAfter || event.repeatEndAfter) && kotlin.math.abs(down.position.x - (x + colGapPx / 2)) <= 12.dp.toPx()
+                                        withinLine && onEnd
+                                    }
                                     if (clickedBar != null) {
+                                        if (selectedBarEvent == clickedBar) {
+                                            selectedBarEvent = -1
+                                            selectedNotes = emptySet()
+                                            onSelect(-1, -1)
+                                            return@awaitEachGesture
+                                        }
                                         selectedBarEvent = clickedBar
                                         selectedNotes = emptySet()
                                         onSelect(-1, -1)
@@ -278,15 +445,33 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         }
                                         return@awaitEachGesture
                                     }
-                                    val hasNote = document.events[startEvent].frets.getOrNull(startString) != null
+                                    val hasNote = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString) != null
+                                    heldNote = NotePosition(startEvent, startString).takeIf { hasNote }
                                     var draggingNote = false
                                     var selectingRectangle = false
                                     var rectangleEnd = down.position
+                                    var noteDragDelta = Offset.Zero
                                     val pastSlop = awaitTouchSlopOrCancellation(down.id) { change, _ ->
                                         if (hasNote) {
                                             draggingNote = true
                                             onSelect(startEvent, startString)
-                                            dragTargetString = startString
+                                            // The first movement that crosses touch slop may also be the
+                                            // release position (common for a short desktop drag). Keep it.
+                                            noteDragDelta = change.position - down.position
+                                            val targetSystem = (change.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
+                                            val targetLocalY = change.position.y - targetSystem * systemHeight.toPx()
+                                            val horizontalDrag = kotlin.math.abs(noteDragDelta.x) > kotlin.math.abs(noteDragDelta.y)
+                                            dragTargetString = if (!horizontalDrag) {
+                                                ((targetLocalY - 26.dp.toPx()) / 32.dp.toPx()).roundToInt().coerceIn(0, document.tuning.lastIndex)
+                                            } else startString
+                                            val originalFret = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString)
+                                            val fretDelta = (noteDragDelta.x / 20.dp.toPx()).roundToInt()
+                                            dragTargetFret = when {
+                                                originalFret == null -> -1
+                                                horizontalDrag -> (originalFret + fretDelta).coerceIn(0, 36)
+                                                dragTargetString in document.tuning.indices -> originalFret + document.tuning[startString] - document.tuning[dragTargetString]
+                                                else -> -1
+                                            }
                                         } else {
                                             selectingRectangle = true
                                             selectionRect = Rect(
@@ -297,7 +482,11 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         change.consume()
                                     }
                                     if (pastSlop == null) {
-                                        if (hasNote && !draggingNote) {
+                                        if (addNoteMode && !hasNote) {
+                                            onAdd(startEvent, startString, 0, selectedLengthCode)
+                                            selectedNotes = emptySet()
+                                            selectedBarEvent = -1
+                                        } else if (hasNote && !draggingNote) {
                                             selectedBarEvent = -1
                                             onSelect(startEvent, startString)
                                             selectedNotes = setOf(NotePosition(startEvent, startString))
@@ -308,18 +497,37 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         }
                                     } else if (draggingNote) {
                                         drag(down.id) { change ->
+                                            noteDragDelta = change.position - down.position
                                             val targetSystem = (change.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
                                             val targetLocalY = change.position.y - targetSystem * systemHeight.toPx()
                                             val target = ((targetLocalY - 26.dp.toPx()) / 32.dp.toPx()).roundToInt().coerceIn(0, document.tuning.lastIndex)
-                                            dragTargetString = target
+                                            val horizontalDrag = kotlin.math.abs(noteDragDelta.x) > kotlin.math.abs(noteDragDelta.y)
+                                            dragTargetString = if (horizontalDrag) startString else target
+                                            val originalFret = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString)
+                                            val fretDelta = (noteDragDelta.x / 20.dp.toPx()).roundToInt()
+                                            dragTargetFret = when {
+                                                originalFret == null -> -1
+                                                horizontalDrag -> (originalFret + fretDelta).coerceIn(0, 36)
+                                                dragTargetString in document.tuning.indices -> originalFret + document.tuning[startString] - document.tuning[dragTargetString]
+                                                else -> -1
+                                            }
                                             change.consume()
                                         }
-                                        val target = dragTargetString
-                                        if (target in document.tuning.indices && target != startString) {
-                                            onMove(target)
-                                            selectedNotes = setOf(NotePosition(startEvent, target))
+                                        if (kotlin.math.abs(noteDragDelta.x) > kotlin.math.abs(noteDragDelta.y)) {
+                                            val originalFret = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString)
+                                            if (originalFret != null && dragTargetFret >= 0 && dragTargetFret != originalFret) onSetFret(startEvent, startString, dragTargetFret)
+                                            selectedNotes = setOf(NotePosition(startEvent, startString))
+                                        } else {
+                                            val target = dragTargetString
+                                            if (target in document.tuning.indices && target != startString) {
+                                                onMove(startEvent, startString, target)
+                                                selectedNotes = setOf(NotePosition(startEvent, target))
+                                            } else {
+                                                selectedNotes = setOf(NotePosition(startEvent, startString))
+                                            }
                                         }
                                         dragTargetString = -1
+                                        dragTargetFret = -1
                                     } else if (selectingRectangle) {
                                         drag(down.id) { change ->
                                             rectangleEnd = change.position
@@ -346,6 +554,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         }
                                         selectionRect = null
                                     }
+                                    heldNote = null
                                 }
                             }) {
                             val systemHeightPx = systemHeight.toPx()
@@ -353,10 +562,10 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                             val left = leftPx
                             repeat(systems) { system ->
                                 val top = system * systemHeightPx
-                                if (system > 0) drawLine(Color(0x33808080), Offset(0f, top), Offset(size.width, top), 1f)
+                                if (system > 0) drawLine(muted.copy(alpha = 0.22f), Offset(0f, top), Offset(size.width, top), 1f)
                                 for (s in document.tuning.indices) {
                                     val y = top + 26.dp.toPx() + rowGap * s
-                                    drawLine(Color(0xFF76827E), Offset(left, y), Offset(size.width - 8.dp.toPx(), y), strokeWidth = 1.4f)
+                                    drawLine(line, Offset(left, y), Offset(size.width - 8.dp.toPx(), y), strokeWidth = 1.4f)
                                     drawText(textMeasurer, listOf("e", noteName(11, naming), "G", "D", "A", "E").getOrElse(s) { "S${s + 1}" }, Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
                                 }
                             }
@@ -365,10 +574,30 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                 val local = i % columnsPerSystem
                                 val top = system * systemHeightPx
                                 val x = left + colGapPx * (local + 1)
-                                if (event.barAfter) {
-                                    val barColor = if (i == selectedBarEvent) Color(0xFFD98C35) else green
+                                if (event.repeatStartBefore) {
+                                    val repeatX = x - colGapPx / 2
+                                    val repeatColor = if (i == selectedBarEvent) highlight else green
                                     val barBottom = minOf(214.dp.toPx(), systemHeightPx - 4.dp.toPx())
-                                    drawLine(barColor, Offset(x + colGapPx / 2, top + 8.dp.toPx()), Offset(x + colGapPx / 2, top + barBottom), if (i == selectedBarEvent) 3.5f else 2f)
+                                    drawLine(repeatColor, Offset(repeatX, top + 8.dp.toPx()), Offset(repeatX, top + barBottom), 3.5f)
+                                    drawLine(repeatColor.copy(alpha = 0.75f), Offset(repeatX + 4.dp.toPx(), top + 8.dp.toPx()), Offset(repeatX + 4.dp.toPx(), top + barBottom), 1.5f)
+                                    val dotY = top + 26.dp.toPx() + rowGap * ((document.tuning.size - 1) / 2f)
+                                    drawCircle(repeatColor, 2.2.dp.toPx(), Offset(repeatX + 8.dp.toPx(), dotY - 4.dp.toPx()))
+                                    drawCircle(repeatColor, 2.2.dp.toPx(), Offset(repeatX + 8.dp.toPx(), dotY + 4.dp.toPx()))
+                                }
+                                if (event.barAfter) {
+                                    val barColor = if (i == selectedBarEvent) highlight else green
+                                    val barBottom = minOf(214.dp.toPx(), systemHeightPx - 4.dp.toPx())
+                                    val repeatX = x + colGapPx / 2
+                                    if (event.repeatEndAfter) {
+                                        drawLine(barColor.copy(alpha = 0.75f), Offset(repeatX - 4.dp.toPx(), top + 8.dp.toPx()), Offset(repeatX - 4.dp.toPx(), top + barBottom), 1.5f)
+                                    }
+                                    drawLine(barColor, Offset(repeatX, top + 8.dp.toPx()), Offset(repeatX, top + barBottom), if (event.repeatEndAfter || i == selectedBarEvent) 3.5f else 2f)
+                                    if (event.repeatEndAfter) {
+                                        val dotY = top + 26.dp.toPx() + rowGap * ((document.tuning.size - 1) / 2f)
+                                        drawCircle(barColor, 2.2.dp.toPx(), Offset(repeatX - 8.dp.toPx(), dotY - 4.dp.toPx()))
+                                        drawCircle(barColor, 2.2.dp.toPx(), Offset(repeatX - 8.dp.toPx(), dotY + 4.dp.toPx()))
+                                        drawText(textMeasurer, "×${event.repeatCount}", Offset(repeatX - 16.dp.toPx(), top + 2.dp.toPx()), style = TextStyle(color = barColor, fontSize = 9.sp, fontWeight = FontWeight.Bold))
+                                    }
                                 }
                                 event.frets.forEachIndexed { s, fret ->
                                     if (fret != null) {
@@ -376,18 +605,46 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         val selected = NotePosition(i, s) in selectedNotes
                                         val chosen = i == selectedEvent && s == selectedString
                                         val dropTarget = i == selectedEvent && s == dragTargetString && dragTargetString != selectedString
+                                        val fretPreview = chosen && dragTargetString == selectedString && dragTargetFret >= 0
+                                        val verticalMovePreview = chosen && dragTargetString in document.tuning.indices && dragTargetString != s
                                         val action = event.actions.getOrNull(s)
                                         // The notehead circle already delimits the fret; do not add notation parentheses.
-                                        val noteLabel = fret.toString()
+                                        val noteLabel = (if (fretPreview) dragTargetFret else fret).toString()
                                         val radius = 14.dp.toPx()
-                                        val noteFill = when { dropTarget -> Color(0xFFDDE9E4); chosen -> green; selected -> Color(0xFFFFE6B8); else -> Color.White }
-                                        val noteOutline = when { dropTarget || chosen -> green; selected -> Color(0xFFB36A16); else -> ink }
-                                        drawCircle(noteFill, radius = radius, center = Offset(x, y))
-                                        drawCircle(noteOutline, radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (selected) 2.5f else 1.5f))
+                                        val noteFill = when { fretPreview || selected -> selection; dropTarget -> surfaceRaised; chosen -> green; else -> surfaceRaised }
+                                        val noteOutline = when { fretPreview || selected || dropTarget || chosen -> green; else -> line }
+                                        val originAlpha = if (verticalMovePreview) 0.30f else 1f
+                                        drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
+                                        drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (selected || fretPreview) 2.5f else 1.5f))
                                         if (playingEventIndex == i) {
-                                            drawCircle(Color(0xFFE38B32), radius = 4.dp.toPx(), center = Offset(x - radius - 5.dp.toPx(), y))
+                                            drawCircle(highlight, radius = 4.dp.toPx(), center = Offset(x - radius - 5.dp.toPx(), y))
                                         }
-                                        drawText(textMeasurer, noteLabel, Offset(x - if (noteLabel.length > 2) 11.dp.toPx() else 5.dp.toPx(), y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 11.sp, fontWeight = FontWeight.Bold))
+                                        drawText(textMeasurer, noteLabel, Offset(x - if (noteLabel.length > 2) 11.dp.toPx() else 5.dp.toPx(), y - 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = 11.sp, fontWeight = FontWeight.Bold))
+                                        if (verticalMovePreview && dragTargetFret in 0..36) {
+                                            val previewY = top + 26.dp.toPx() + rowGap * dragTargetString
+                                            val targetEmpty = event.frets.getOrNull(dragTargetString) == null
+                                            val previewFill = if (targetEmpty) selection else surfaceRaised
+                                            drawCircle(previewFill.copy(alpha = 0.94f), radius = radius, center = Offset(x, previewY))
+                                            drawCircle(green, radius = radius, center = Offset(x, previewY), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
+                                            val previewLabel = dragTargetFret.toString()
+                                            drawText(textMeasurer, previewLabel, Offset(x - if (previewLabel.length > 2) 11.dp.toPx() else 5.dp.toPx(), previewY - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 11.sp, fontWeight = FontWeight.Bold))
+                                        }
+                                        if (heldNote == NotePosition(i, s)) {
+                                            drawMoveArrows(Offset(x, y), radius, green)
+                                        }
+                                        if (fretPreview) {
+                                            val previewText = "Fret $dragTargetFret"
+                                            val previewLayout = textMeasurer.measure(previewText, style = TextStyle(color = paper, fontSize = 10.sp, fontWeight = FontWeight.Bold))
+                                            val bubbleWidth = previewLayout.size.width + 12.dp.toPx()
+                                            val bubbleHeight = previewLayout.size.height + 6.dp.toPx()
+                                            val bubbleLeft = (x - bubbleWidth / 2).coerceIn(0f, size.width - bubbleWidth)
+                                            val bubbleTop = (y - radius - bubbleHeight - 5.dp.toPx()).coerceAtLeast(2.dp.toPx())
+                                            drawRoundRect(green, Offset(bubbleLeft, bubbleTop), androidx.compose.ui.geometry.Size(bubbleWidth, bubbleHeight), cornerRadius = androidx.compose.ui.geometry.CornerRadius(5.dp.toPx()))
+                                            drawText(textMeasurer, previewText, Offset(bubbleLeft + 6.dp.toPx(), bubbleTop + 3.dp.toPx()), style = TextStyle(color = paper, fontSize = 10.sp, fontWeight = FontWeight.Bold))
+                                        }
+                                        (event.lengthCodes.getOrNull(s) ?: event.durationUnits.getOrNull(s)?.let { lengthCodeForUnits(it, document.divisions) })?.let { code ->
+                                            drawDurationGlyph(code, Offset(x + radius + 8.dp.toPx(), y - 7.dp.toPx()), green, 1.dp.toPx())
+                                        }
                                         if (action?.lowercaseChar() == 'v') {
                                             val waveWidth = 28.dp.toPx()
                                             val waveHeight = 3.dp.toPx()
@@ -412,29 +669,67 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                 }
                             }
                             selectionRect?.let { rect ->
-                                drawRect(Color(0x33236957), Offset(rect.left, rect.top), androidx.compose.ui.geometry.Size(rect.width, rect.height))
+                                drawRect(green.copy(alpha = 0.20f), Offset(rect.left, rect.top), androidx.compose.ui.geometry.Size(rect.width, rect.height))
                                 drawRect(green, Offset(rect.left, rect.top), androidx.compose.ui.geometry.Size(rect.width, rect.height), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f))
                             }
                         }
                     }
-                    Spacer(Modifier.height(12.dp))
+                }
+            }
+        }
+        Spacer(Modifier.height(12.dp))
                     val movable = selectedEvent >= 0 && selectedString >= 0 && document.events.getOrNull(selectedEvent)?.frets?.getOrNull(selectedString) != null
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(if (movable) "Move selected note to:" else "Select a note to change its string", fontSize = 13.sp, color = ink, fontWeight = FontWeight.Medium)
-                        Spacer(Modifier.width(4.dp))
-                        OutlinedTextField(fretToAdd, { fretToAdd = it.filter(Char::isDigit).take(2) }, Modifier.width(78.dp), label = { Text("New fret") }, singleLine = true)
-                        OutlinedButton(onClick = { addNoteMode = !addNoteMode }) { Text(if (addNoteMode) "Click a string…" else "Add note") }
-                        OutlinedButton(onClick = onAddPosition) { Text("Add tab position") }
-                        OutlinedButton(onClick = { addBarMode = !addBarMode; addNoteMode = false }) { Text(if (addBarMode) "Click a position…" else "Add bar") }
-                        OutlinedTextField(tempoInput, { tempoInput = it.filter(Char::isDigit).take(3) }, Modifier.width(90.dp), label = { Text("BPM") }, singleLine = true)
-                        OutlinedButton(onClick = { tempoInput.toIntOrNull()?.takeIf { it in 20..400 }?.let(onSetTempo) }) { Text("Set tempo") }
+                    FlowRow(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        itemVerticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioOption("Allow adding notes", addNoteMode, onClick = {
+                                addNoteMode = !addNoteMode
+                                if (addNoteMode) markerPlacement = null
+                            })
+                        }
+                        OutlinedButton(onClick = {
+                            markerPlacement = if (markerPlacement == MarkerPlacement.BAR) null else MarkerPlacement.BAR
+                            addNoteMode = false
+                        }) { Text(if (markerPlacement == MarkerPlacement.BAR) "Place bar line…" else "Place bar line") }
+                        OutlinedButton(onClick = {
+                            markerPlacement = if (markerPlacement == MarkerPlacement.REPEAT_START) null else MarkerPlacement.REPEAT_START
+                            addNoteMode = false
+                        }) { Text(if (markerPlacement == MarkerPlacement.REPEAT_START) "Place repeat start…" else "Repeat start") }
+                        OutlinedButton(onClick = {
+                            markerPlacement = if (markerPlacement == MarkerPlacement.REPEAT_END) null else MarkerPlacement.REPEAT_END
+                            addNoteMode = false
+                        }) { Text(if (markerPlacement == MarkerPlacement.REPEAT_END) "Place repeat end…" else "Repeat end") }
+                        document.events.getOrNull(selectedBarEvent)?.takeIf { it.repeatEndAfter }?.let { repeatEvent ->
+                            RepeatCountDragControl(repeatEvent.repeatCount) { delta -> onAdjustRepeatCount(selectedBarEvent, delta) }
+                        }
                         Box {
-                            OutlinedButton(onClick = { showLengthMenu = true }) { Text("Length: ${legacyLengthLabel(selectedLengthCode)}") }
+                            OutlinedButton(
+                                onClick = { showLengthMenu = true },
+                                modifier = Modifier.semantics { contentDescription = "Note duration: ${legacyLengthLabel(selectedLengthCode)}" }
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    DurationGlyphIcon(selectedLengthCode, Modifier.size(24.dp, 22.dp))
+                                    Text("▾")
+                                }
+                            }
                             DropdownMenu(expanded = showLengthMenu, onDismissRequest = { showLengthMenu = false }) {
                                 (1..12).forEach { code ->
-                                    DropdownMenuItem(text = { Text(legacyLengthLabel(code)) }, onClick = {
+                                    DropdownMenuItem(
+                                        text = {
+                                            Box(Modifier.semantics { contentDescription = legacyLengthLabel(code) }) {
+                                                DurationGlyphIcon(code, Modifier.size(28.dp, 24.dp))
+                                            }
+                                        },
+                                        onClick = {
                                         selectedLengthCode = code
-                                        if (movable) onSetLength(code)
+                                        val targets = selectedNotes.ifEmpty {
+                                            if (movable) setOf(NotePosition(selectedEvent, selectedString)) else emptySet()
+                                        }
+                                        if (targets.isNotEmpty()) onSetLength(targets, code)
                                         showLengthMenu = false
                                     })
                                 }
@@ -444,60 +739,115 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                         if (selectedBarEvent >= 0) OutlinedButton(onClick = {
                             onRemoveBar(selectedBarEvent)
                             selectedBarEvent = -1
-                        }) { Text("Remove selected bar") }
-                        if (movable || selectedNotes.isNotEmpty()) {
-                            OutlinedButton(onClick = { selectedNotes = onMoveDirection(selectedNotes, 1) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) { Text("↓ Lower string") }
-                            OutlinedButton(onClick = { selectedNotes = onMoveDirection(selectedNotes, -1) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) { Text("↑ Higher string") }
-                        }
-                        if (selectedNotes.size <= 1) document.tuning.indices.forEach { s ->
-                            val candidateFret = if (movable) document.tuning[selectedString] + document.events[selectedEvent].frets[selectedString]!! - document.tuning[s] else null
-                            val enabled = movable && s != selectedString && document.events[selectedEvent].frets[s] == null && candidateFret != null && candidateFret in 0..36
-                            if (enabled) OutlinedButton(onClick = { onMove(s) }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 0.dp)) { Text("${listOf("e", "B", "G", "D", "A", "E").getOrElse(s) { "S${s + 1}" }} · $candidateFret") }
+                        }) { Text("Remove selected marker") }
+                        // Keep the direct string-move actions alongside drag-and-drop. Dragging is
+                        // useful, but the explicit pitch-preserving choices are often easier to
+                        // understand and more precise, especially on a trackpad or touchscreen.
+                        if (selectedNotes.size > 1) {
+                            OutlinedButton(onClick = { selectedNotes = onMoveDirection(selectedNotes, 1) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) { Text("↓ Move") }
+                            OutlinedButton(onClick = { selectedNotes = onMoveDirection(selectedNotes, -1) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) { Text("↑ Move") }
                         }
                     }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(if (addNoteMode) "Click the string and event position where the note belongs." else "${selectedNotes.size} notes selected · drag from empty staff space to add a rectangle selection", fontSize = 12.sp, color = Color.Gray, modifier = Modifier.weight(1f))
-                        if (selectedNotes.isNotEmpty()) TextButton(onClick = { selectedNotes = emptySet() }) { Text("Clear selection") }
-                    }
-                    Spacer(Modifier.height(10.dp))
-                    Card(colors = CardDefaults.cardColors(containerColor = Color(0xFFF2F5F2)), shape = RoundedCornerShape(12.dp)) {
-                        Column(Modifier.fillMaxWidth().padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Text("LEGACY FRET LIMITS · WHOLE TAB", fontSize = 10.sp, color = green, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
-                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                OutlinedTextField(minimumFret, { minimumFret = it.filter(Char::isDigit).take(2) }, Modifier.width(112.dp), label = { Text("Lower limit") }, singleLine = true)
-                                OutlinedButton(onClick = {
-                                    val result = onGroupTransform(GroupFretRequest(GroupFretOperation.RAISE_MINIMUM, minimumFret.toIntOrNull() ?: -1, maximumFret.toIntOrNull() ?: -1, selectedNotes = selectedNotes))
-                                    groupTransformMessage = result.message
-                                    if (result.applied) selectedNotes = emptySet()
-                                }) { Text("Apply lower limit") }
-                                OutlinedTextField(maximumFret, { maximumFret = it.filter(Char::isDigit).take(2) }, Modifier.width(112.dp), label = { Text("Upper limit") }, singleLine = true)
-                                OutlinedButton(onClick = {
-                                    val result = onGroupTransform(GroupFretRequest(GroupFretOperation.LOWER_MAXIMUM, minimumFret.toIntOrNull() ?: -1, maximumFret.toIntOrNull() ?: -1, selectedNotes = selectedNotes))
-                                    groupTransformMessage = result.message
-                                    if (result.applied) selectedNotes = emptySet()
-                                }) { Text("Apply upper limit") }
+                    if (selectedNotes.isNotEmpty() || selectedBarEvent >= 0) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val selectedMarker = document.events.getOrNull(selectedBarEvent)
+                            val selectionLabel = when {
+                                selectedBarEvent < 0 -> "${selectedNotes.size} selected"
+                                selectedMarker?.repeatStartBefore == true && selectedMarker.repeatEndAfter -> "Repeat markers selected"
+                                selectedMarker?.repeatStartBefore == true -> "Repeat start selected"
+                                selectedMarker?.repeatEndAfter == true -> "Repeat end selected"
+                                else -> "Bar line selected"
                             }
-                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                Text("Separate: pitch transpose entire tab", fontSize = 12.sp, color = Color.Gray)
+                            Text(selectionLabel, fontSize = 12.sp, color = muted)
+                            TextButton(onClick = {
+                                selectedNotes = emptySet()
+                                selectedBarEvent = -1
+                                onSelect(-1, -1)
+                            }) { Text("Clear selection") }
+                        }
+                    }
+        Spacer(Modifier.height(10.dp))
+        Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(12.dp)) {
+                        Column(Modifier.fillMaxWidth().padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                Text("Fret range", fontSize = 13.sp, color = ink, fontWeight = FontWeight.Medium)
+                                OutlinedTextField(minimumFret, { value ->
+                                    minimumFret = value.filter(Char::isDigit).take(2)
+                                    applyFretLimitEdit(GroupFretOperation.RAISE_MINIMUM, minimumFret)
+                                }, Modifier.width(84.dp), label = { Text("Min") }, singleLine = true)
+                                Text("to", color = muted)
+                                OutlinedTextField(maximumFret, { value ->
+                                    maximumFret = value.filter(Char::isDigit).take(2)
+                                    applyFretLimitEdit(GroupFretOperation.LOWER_MAXIMUM, maximumFret)
+                                }, Modifier.width(84.dp), label = { Text("Max") }, singleLine = true)
+                                Spacer(Modifier.width(8.dp))
                                 OutlinedTextField(transposeSemitones, { raw ->
                                     transposeSemitones = raw.filterIndexed { index, char -> char.isDigit() || index == 0 && char == '-' }.take(3)
-                                }, Modifier.width(104.dp), label = { Text("Semitones") }, singleLine = true)
-                                Button(onClick = {
+                                }, Modifier.width(112.dp), label = { Text("Semitones", maxLines = 1) }, singleLine = true)
+                                Button(
+                                    enabled = transposeSemitones.toIntOrNull()?.let { it in -48..48 && it != 0 } == true,
+                                    onClick = {
                                     val result = onGroupTransform(GroupFretRequest(GroupFretOperation.TRANSPOSE, minimumFret.toIntOrNull() ?: -1, maximumFret.toIntOrNull() ?: -1, transposeSemitones.toIntOrNull() ?: 999))
                                     groupTransformMessage = result.message
                                     if (result.applied) selectedNotes = emptySet()
-                                }) { Text("Transpose entire tab") }
+                                }) { Text("Transpose") }
                             }
-                            Text(groupTransformMessage.ifBlank { "Lower/upper limits re-finger selected notes and preserve pitch. Transpose changes pitch across the entire song." }, fontSize = 12.sp, color = if (groupTransformMessage.contains("Could not") || groupTransformMessage.contains("must be") || groupTransformMessage.contains("Select notes")) Color(0xFF9B3B2E) else Color.Gray)
+                            if (groupTransformMessage.isNotBlank()) {
+                                Text(groupTransformMessage, fontSize = 12.sp, color = if (groupTransformMessage.contains("Could not") || groupTransformMessage.contains("must be") || groupTransformMessage.contains("Select notes")) error else muted)
+                            }
+                        }
+        }
+    }
+}
+
+@Composable
+private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.height(32.dp).selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Canvas(Modifier.size(18.dp)) {
+            val radius = size.minDimension / 2f - 1.dp.toPx()
+            drawCircle(if (selected) green else muted, radius, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx()))
+            if (selected) drawCircle(green, radius = radius * 0.52f)
+        }
+        Text(label, fontSize = 13.sp, color = ink)
+    }
+}
+
+@Composable
+private fun RepeatCountDragControl(repeatCount: Int, onAdjust: (Int) -> Unit) {
+    val density = LocalDensity.current
+    val latestOnAdjust = rememberUpdatedState(onAdjust)
+    Box(
+        Modifier
+            .background(surfaceRaised, RoundedCornerShape(50))
+            .pointerInput(Unit) {
+                val step = with(density) { 24.dp.toPx() }
+                var remainder = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { remainder = 0f },
+                    onHorizontalDrag = { change, amount ->
+                        change.consume()
+                        remainder += amount
+                        while (remainder >= step) {
+                            latestOnAdjust.value(1)
+                            remainder -= step
+                        }
+                        while (remainder <= -step) {
+                            latestOnAdjust.value(-1)
+                            remainder += step
                         }
                     }
-                }
+                )
             }
-        }
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            InfoCard("PITCH PRESERVED", "String changes calculate a new fret for the same sounding note.", Modifier.weight(1f))
-            InfoCard("CUSTOM TUNING", "#tuning values set open-string pitch; #transpose shifts the tab.", Modifier.weight(1f))
+            .semantics { contentDescription = "Repeat count $repeatCount; drag left or right to adjust" }
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text("↔", color = green, fontSize = 15.sp)
+            Text("×$repeatCount", color = ink, fontSize = 13.sp, fontWeight = FontWeight.Medium)
         }
     }
 }
@@ -516,6 +866,83 @@ private fun legacyLengthLabel(code: Int): String = when (code) {
     11 -> "32nd"
     12 -> "Dotted 32nd"
     else -> "Quarter"
+}
+
+private fun lengthCodeForUnits(units: Int, divisions: Int): Int? = (1..12).firstOrNull { code ->
+    val expected = when (code) {
+        1 -> divisions * 4
+        2 -> divisions * 6
+        3 -> divisions * 2
+        4 -> divisions * 3
+        5 -> divisions
+        6 -> divisions * 3 / 2
+        7 -> divisions / 2
+        8 -> divisions * 3 / 4
+        9 -> divisions / 4
+        10 -> divisions * 3 / 8
+        11 -> divisions / 8
+        else -> divisions * 3 / 16
+    }
+    expected == units
+}
+
+@Composable
+private fun DurationGlyphIcon(code: Int, modifier: Modifier = Modifier) {
+    Canvas(modifier) {
+        drawDurationGlyph(code, Offset(size.width / 2f, size.height - 4.dp.toPx()), green, 1.dp.toPx())
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawMoveArrows(center: Offset, noteRadius: Float, color: Color) {
+    val gap = 2.dp.toPx()
+    val arrowLength = 5.dp.toPx()
+    val headLength = 2.5.dp.toPx()
+    val halfHeadWidth = 1.8.dp.toPx()
+    val stroke = 1.4.dp.toPx()
+    listOf(Offset(0f, -1f), Offset(0f, 1f), Offset(-1f, 0f), Offset(1f, 0f)).forEach { direction ->
+        val start = center + direction * (noteRadius + gap)
+        val tip = start + direction * arrowLength
+        val back = tip - direction * headLength
+        val perpendicular = Offset(-direction.y, direction.x) * halfHeadWidth
+        drawLine(color, start, tip, strokeWidth = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        drawLine(color, tip, back + perpendicular, strokeWidth = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+        drawLine(color, tip, back - perpendicular, strokeWidth = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+    }
+}
+
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDurationGlyph(code: Int, headCenter: Offset, color: Color, unit: Float) {
+    val headWidth = 6f * unit
+    val headHeight = 4f * unit
+    val head = androidx.compose.ui.geometry.Rect(
+        headCenter.x - headWidth / 2f,
+        headCenter.y - headHeight / 2f,
+        headCenter.x + headWidth / 2f,
+        headCenter.y + headHeight / 2f
+    )
+    val openHead = code <= 4
+    drawOval(
+        color,
+        topLeft = Offset(head.left, head.top),
+        size = androidx.compose.ui.geometry.Size(head.width, head.height),
+        style = if (openHead) androidx.compose.ui.graphics.drawscope.Stroke(width = 1.4f * unit) else androidx.compose.ui.graphics.drawscope.Fill
+    )
+    if (code >= 3) {
+        val stemX = head.right - 0.5f * unit
+        val stemTop = headCenter.y - 15f * unit
+        drawLine(color, Offset(stemX, headCenter.y), Offset(stemX, stemTop), strokeWidth = 1.4f * unit)
+        val flags = ((code - 5) / 2).coerceIn(0, 3)
+        repeat(flags) { index ->
+            val flagTop = stemTop + index * 3.5f * unit
+            val flag = Path().apply {
+                moveTo(stemX, flagTop)
+                cubicTo(stemX + 6f * unit, flagTop + 1f * unit, stemX + 6f * unit, flagTop + 4f * unit, stemX + 2f * unit, flagTop + 6f * unit)
+            }
+            drawPath(flag, color, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.3f * unit))
+        }
+    }
+    if (code in 2..12 && code % 2 == 0) {
+        drawCircle(color, radius = 1.2f * unit, center = Offset(head.right + 3f * unit, headCenter.y))
+    }
 }
 
 @Composable
@@ -556,12 +983,12 @@ private fun ChordLookupPanel(
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         chord?.let {
-            Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
+            Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(12.dp)) {
                     Text("${it.name(naming)} · ${it.pitchClasses.sorted().joinToString(" · ") { pc -> noteName(pc, naming) }}", fontSize = 18.sp, color = ink, fontWeight = FontWeight.SemiBold)
                     when {
-                        !databaseLoaded -> Text("Loading shapes…", fontSize = 13.sp, color = Color.Gray)
-                        voicings.isEmpty() -> Text("No built-in fingering for this chord.", fontSize = 13.sp, color = Color.Gray)
+                        !databaseLoaded -> Text("Loading shapes…", fontSize = 13.sp, color = muted)
+                        voicings.isEmpty() -> Text("No built-in fingering for this chord.", fontSize = 13.sp, color = muted)
                         else -> {
                             val open = voicings.filter { shape -> shape.kind == VoicingKind.OPEN }
                             val barre = voicings.filter { shape -> shape.kind == VoicingKind.BARRE }
@@ -598,7 +1025,7 @@ private fun ChordBuilderCard(
     val stringNames = listOf("e", noteName(11, naming), "G", "D", "A", "E")
     val chartLabelWidth = 64.dp
     val fretCellWidth = 58.dp
-    Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
+    Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(16.dp)) {
         Column(Modifier.fillMaxWidth().padding(16.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
@@ -611,13 +1038,13 @@ private fun ChordBuilderCard(
                 )
                 Spacer(Modifier.width(12.dp))
                 NamingSelector("Chord names", namingOverride, inherited = naming, onSelect = onNamingOverride)
-                Text("${selectedFrets.count { it != null }} / ${tuning.size} strings", fontSize = 12.sp, color = Color.Gray)
+                Text("${selectedFrets.count { it != null }} / ${tuning.size} strings", fontSize = 12.sp, color = muted)
                 TextButton(onClick = { showInstructions = !showInstructions }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
                     Text(if (showInstructions) "Hide help" else "How to", fontSize = 12.sp)
                 }
             }
             if (showInstructions) {
-                Text("Tap a fret for each string. Fret 0 is open; tap × to mute a string. A matching chord name appears below.", fontSize = 12.sp, color = Color.Gray)
+                Text("Tap a fret for each string. Fret 0 is open; tap × to mute a string. A matching chord name appears below.", fontSize = 12.sp, color = muted)
             }
             Spacer(Modifier.height(4.dp))
             Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
@@ -638,23 +1065,23 @@ private fun ChordBuilderCard(
                     val gridRight = labelWidth + cellWidth * 13
                     for (fret in 0..12) {
                         val x = labelWidth + (fret + 0.5f) * cellWidth
-                        drawText(textMeasurer, fret.toString(), Offset(x - 4.dp.toPx(), 3.dp.toPx()), style = TextStyle(color = Color(0xFF68736F), fontSize = 10.sp))
+                        drawText(textMeasurer, fret.toString(), Offset(x - 4.dp.toPx(), 3.dp.toPx()), style = TextStyle(color = muted, fontSize = 10.sp))
                     }
                     for (string in tuning.indices) {
                         val y = rowGap * (string + 1)
-                        drawLine(Color(0xFF87918D), Offset(labelWidth, y), Offset(gridRight, y), 1.4f)
+                        drawLine(line, Offset(labelWidth, y), Offset(gridRight, y), 1.4f)
                         drawText(textMeasurer, stringNames.getOrElse(string) { "S${string + 1}" }, Offset(34.dp.toPx(), y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp, fontWeight = FontWeight.Bold))
                         val activeFret = selectedFrets[string]
                         val stringMarker = activeFret?.let { fret -> noteName(tuning[string] + fret, naming) } ?: "×"
-                        drawText(textMeasurer, stringMarker, Offset(8.dp.toPx(), y - 9.dp.toPx()), style = TextStyle(color = if (activeFret == null) Color(0xFF9B3D32) else green, fontSize = 12.sp, fontWeight = FontWeight.Bold))
+                        drawText(textMeasurer, stringMarker, Offset(8.dp.toPx(), y - 9.dp.toPx()), style = TextStyle(color = if (activeFret == null) error else green, fontSize = 12.sp, fontWeight = FontWeight.Bold))
                         for (fret in 0..12) {
                             val x = labelWidth + (fret + 1f) * cellWidth
-                            drawLine(if (fret == 0) ink else Color(0xFFBCC5C1), Offset(x, y - rowGap * 0.42f), Offset(x, y + rowGap * 0.42f), if (fret == 0) 2.4f else 1f)
+                            drawLine(if (fret == 0) ink else line, Offset(x, y - rowGap * 0.42f), Offset(x, y + rowGap * 0.42f), if (fret == 0) 2.4f else 1f)
                         }
                         selectedFrets[string]?.let { fret ->
                             val x = labelWidth + (fret + 0.5f) * cellWidth
                             drawCircle(green, 13.dp.toPx(), Offset(x, y))
-                            drawText(textMeasurer, fret.toString(), Offset(x - 4.dp.toPx(), y - 7.dp.toPx()), style = TextStyle(color = Color.White, fontSize = 10.sp, fontWeight = FontWeight.Bold))
+                            drawText(textMeasurer, fret.toString(), Offset(x - 4.dp.toPx(), y - 7.dp.toPx()), style = TextStyle(color = paper, fontSize = 10.sp, fontWeight = FontWeight.Bold))
                         }
                     }
                 }
@@ -662,13 +1089,13 @@ private fun ChordBuilderCard(
             Spacer(Modifier.height(8.dp))
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
                 Text(chord?.name(naming) ?: if (pitchClasses.isEmpty()) "Choose notes above" else "No common chord match yet", color = if (chord != null) green else ink, fontSize = 20.sp, fontWeight = FontWeight.Bold)
-                if (pitchClasses.isNotEmpty()) Text(pitchClasses.sorted().joinToString(" · ") { noteName(it, naming) }, color = Color.Gray, fontSize = 12.sp)
+                if (pitchClasses.isNotEmpty()) Text(pitchClasses.sorted().joinToString(" · ") { noteName(it, naming) }, color = muted, fontSize = 12.sp)
                 Spacer(Modifier.weight(1f))
                 TextButton(onClick = onClear) { Text("Clear") }
             }
             if (possibilities.size > 1) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Also recognized:", fontSize = 12.sp, color = Color.Gray)
+                    Text("Also recognized:", fontSize = 12.sp, color = muted)
                     possibilities.drop(1).forEach { possibility ->
                         TextButton(onClick = { onChoosePossibility(possibility) }, contentPadding = PaddingValues(horizontal = 7.dp, vertical = 0.dp)) {
                             Text(possibility.name(naming), fontSize = 12.sp)
@@ -698,14 +1125,14 @@ private fun VoicingStrip(title: String, voicings: List<ChordVoicing>, onSelect: 
 @Composable
 private fun VoicingCard(voicing: ChordVoicing, onClick: (() -> Unit)? = null, naming: ChordNamingSystem = ChordNamingSystem.US) {
     val textMeasurer = rememberTextMeasurer()
-    Card(Modifier.width(310.dp).then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(vertical = 3.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFFF8F9F6)), shape = RoundedCornerShape(12.dp)) {
+    Card(Modifier.width(310.dp).then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier).padding(vertical = 3.dp), colors = CardDefaults.cardColors(containerColor = surfaceRaised), shape = RoundedCornerShape(12.dp)) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Canvas(Modifier.width(132.dp).height(142.dp)) {
                 val left = 19.dp.toPx(); val right = size.width - 6.dp.toPx()
                 val top = 23.dp.toPx(); val bottom = size.height - 15.dp.toPx()
                 val dx = (right - left) / 5f; val dy = (bottom - top) / 4f
-                for (i in 0..5) drawLine(Color(0xFF68736F), Offset(left + dx * i, top), Offset(left + dx * i, bottom), 1.2f)
-                for (i in 0..4) drawLine(if (voicing.baseFret == 1 && i == 0) ink else Color(0xFF68736F), Offset(left, top + dy * i), Offset(right, top + dy * i), if (voicing.baseFret == 1 && i == 0) 2.5f else 1.2f)
+                for (i in 0..5) drawLine(line, Offset(left + dx * i, top), Offset(left + dx * i, bottom), 1.2f)
+                for (i in 0..4) drawLine(if (voicing.baseFret == 1 && i == 0) ink else line, Offset(left, top + dy * i), Offset(right, top + dy * i), if (voicing.baseFret == 1 && i == 0) 2.5f else 1.2f)
                 if (voicing.baseFret > 1) drawText(textMeasurer, voicing.baseFret.toString(), Offset(0f, top + dy * 0.65f), style = TextStyle(color = ink, fontSize = 10.sp))
                 voicing.barreFret?.let { barreFret ->
                     if (barreFret in voicing.baseFret until voicing.baseFret + 4) {
@@ -725,20 +1152,20 @@ private fun VoicingCard(voicing: ChordVoicing, onClick: (() -> Unit)? = null, na
                             val y = top + (fret - voicing.baseFret + 0.5f) * dy
                             drawCircle(green, 7.dp.toPx(), Offset(x, y))
                             val finger = voicing.fingers.getOrElse(voicing.fingers.lastIndex - column) { 0 }
-                            if (finger > 0) drawText(textMeasurer, finger.toString(), Offset(x - 3.dp.toPx(), y - 5.dp.toPx()), style = TextStyle(color = Color.White, fontSize = 8.sp, fontWeight = FontWeight.Bold))
+                            if (finger > 0) drawText(textMeasurer, finger.toString(), Offset(x - 3.dp.toPx(), y - 5.dp.toPx()), style = TextStyle(color = paper, fontSize = 8.sp, fontWeight = FontWeight.Bold))
                         }
                     }
                 }
                 listOf("E", "A", "D", "G", noteName(11, naming), "e").forEachIndexed { column, label ->
-                    drawText(textMeasurer, label, Offset(left + dx * column - 3.dp.toPx(), bottom + 2.dp.toPx()), style = TextStyle(color = Color.Gray, fontSize = 8.sp))
+                    drawText(textMeasurer, label, Offset(left + dx * column - 3.dp.toPx(), bottom + 2.dp.toPx()), style = TextStyle(color = muted, fontSize = 8.sp))
                 }
             }
             Spacer(Modifier.width(10.dp))
             Column(Modifier.weight(1f)) {
                 Text(voicing.label, color = ink, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
-                Text("Fingers e B G D A E", color = Color.Gray, fontSize = 9.sp)
+                Text("Fingers e B G D A E", color = muted, fontSize = 9.sp)
                 Text(voicing.fingers.joinToString(" ") { if (it == 0) "·" else it.toString() }, color = green, fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                Text("Frets e B G D A E", color = Color.Gray, fontSize = 9.sp)
+                Text("Frets e B G D A E", color = muted, fontSize = 9.sp)
                 Text(voicing.frets.joinToString(" ") { it?.toString() ?: "×" }, color = green, fontWeight = FontWeight.Bold, fontSize = 12.sp)
             }
         }
@@ -765,7 +1192,7 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
         }.minWithOrNull(compareBy<Triple<Int, Int, Int>> { it.first }.thenBy { it.third }.thenBy { it.second })
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
-        Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
+        Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(16.dp)) {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
                 var keyExpanded by remember { mutableStateOf(false) }
                 var scaleExpanded by remember { mutableStateOf(false) }
@@ -789,28 +1216,28 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
                     val gapX = size.width / 14f
                     for (s in tuning.indices) {
                         val y = gapY * (s + 1)
-                        drawLine(Color(0xFF87918D), Offset(0f, y), Offset(size.width, y), 1.4f)
+                        drawLine(line, Offset(0f, y), Offset(size.width, y), 1.4f)
                         for (fret in 0..12) {
                             val pitch = tuning[s] + fret
                             val pitchClass = ((pitch % 12) + 12) % 12
                             if (pitchClass in noteSet) {
                                 val x = gapX * (fret + 1)
                                 val mainOctave = mainOctaveRoot?.let { pitch >= it.first && pitch < it.first + 12 } == true
-                                val noteColor = if (mainOctave) Color(0xFFD98C35) else if (fret == 0) Color(0xFFDDE9E4) else green
+                                val noteColor = if (mainOctave) highlight else if (fret == 0) surfaceRaised else green
                                 drawCircle(noteColor, 12.dp.toPx(), Offset(x, y))
-                                drawText(textMeasurer, noteName(pitchClass, naming), Offset(x - 7.dp.toPx(), y - 6.dp.toPx()), style = TextStyle(color = if (fret == 0 && !mainOctave) ink else Color.White, fontSize = 9.sp, fontWeight = FontWeight.Bold))
+                                drawText(textMeasurer, noteName(pitchClass, naming), Offset(x - 7.dp.toPx(), y - 6.dp.toPx()), style = TextStyle(color = if (fret == 0 && !mainOctave) ink else paper, fontSize = 9.sp, fontWeight = FontWeight.Bold))
                             }
                         }
                     }
                     for (fret in 0..12) {
                         val x = gapX * (fret + 1)
-                        drawText(textMeasurer, fret.toString(), Offset(x - 4.dp.toPx(), size.height - 18.dp.toPx()), style = TextStyle(color = Color(0xFF68736F), fontSize = 10.sp, fontWeight = FontWeight.Medium))
+                        drawText(textMeasurer, fret.toString(), Offset(x - 4.dp.toPx(), size.height - 18.dp.toPx()), style = TextStyle(color = muted, fontSize = 10.sp, fontWeight = FontWeight.Medium))
                     }
                 }
-                Text("Frets 0–12  ·  tuning follows the loaded tab", fontSize = 12.sp, color = Color.Gray)
+                Text("Frets 0–12  ·  tuning follows the loaded tab", fontSize = 12.sp, color = muted)
                 Spacer(Modifier.height(5.dp))
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(7.dp)) {
-                    Box(Modifier.size(10.dp).background(Color(0xFFD98C35), RoundedCornerShape(50)))
+                    Box(Modifier.size(10.dp).background(highlight, RoundedCornerShape(50)))
                     val rootDescription = mainOctaveRoot?.let { root ->
                         val stringName = listOf("e", "B", "G", "D", "A", "E").getOrElse(root.second) { "S${root.second + 1}" }
                         "$stringName string, fret ${root.third}"
@@ -820,10 +1247,10 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
             }
         }
         Spacer(Modifier.height(12.dp))
-        Card(colors = CardDefaults.cardColors(containerColor = Color.White), shape = RoundedCornerShape(16.dp)) {
+        Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(16.dp)) {
             Column(Modifier.fillMaxWidth().padding(16.dp)) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f).background(Color(0xFFE8EEE9), RoundedCornerShape(12.dp)).padding(12.dp)) {
+                    Column(Modifier.weight(1f).background(surfaceRaised, RoundedCornerShape(12.dp)).padding(12.dp)) {
                         Text("SCALE NOTES", fontSize = 11.sp, color = green, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
                         Text("${noteName(key, naming)} ${scale.name}: " + scale.steps.joinToString(" · ") { noteName((key + it) % 12, naming) }, fontSize = 13.sp, color = ink)
                     }
@@ -832,7 +1259,7 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
                         Text("CHORDS IN THIS SCALE", fontSize = 11.sp, color = green, fontWeight = FontWeight.Bold, letterSpacing = 1.2.sp)
                         Text("Select a chord to see playable shapes", fontSize = 14.sp, color = ink, fontWeight = FontWeight.SemiBold)
                         if (scaleChords.isEmpty()) {
-                            Text("No common triads found for this scale.", fontSize = 13.sp, color = Color.Gray)
+                            Text("No common triads found for this scale.", fontSize = 13.sp, color = muted)
                         } else {
                             Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                                 scaleChords.forEach { chord ->
@@ -845,8 +1272,8 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
                 selectedScaleChord?.let { chord ->
                     Spacer(Modifier.height(10.dp))
                     Text("${chord.name(naming)} · ${chord.pitchClasses.sorted().joinToString(" · ") { noteName(it, naming) }}", fontSize = 14.sp, color = ink)
-                    if (!databaseLoaded) Text("Loading chord shapes…", fontSize = 12.sp, color = Color.Gray)
-                    else if (scaleChordVoicings.isEmpty()) Text("No built-in fingering for this chord.", fontSize = 12.sp, color = Color.Gray)
+                    if (!databaseLoaded) Text("Loading chord shapes…", fontSize = 12.sp, color = muted)
+                    else if (scaleChordVoicings.isEmpty()) Text("No built-in fingering for this chord.", fontSize = 12.sp, color = muted)
                     else {
                         listOf(VoicingKind.OPEN to "OPEN", VoicingKind.BARRE to "BARRE", VoicingKind.OTHER to "FRETTED").forEach { (kind, title) ->
                             val group = scaleChordVoicings.filter { it.kind == kind }
@@ -861,7 +1288,7 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
 
 @Composable
 private fun InfoCard(title: String, body: String, modifier: Modifier = Modifier) {
-    Card(modifier, colors = CardDefaults.cardColors(containerColor = Color(0xFFE8EEE9)), shape = RoundedCornerShape(12.dp)) {
+    Card(modifier, colors = CardDefaults.cardColors(containerColor = surfaceRaised), shape = RoundedCornerShape(12.dp)) {
         Column(Modifier.padding(14.dp)) {
             Text(title, fontSize = 10.sp, color = green, fontWeight = FontWeight.Bold, letterSpacing = 1.sp)
             Spacer(Modifier.height(4.dp)); Text(body, fontSize = 13.sp, color = ink)

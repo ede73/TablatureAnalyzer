@@ -15,6 +15,9 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import java.awt.EventQueue
 import javax.sound.midi.MetaMessage
@@ -26,7 +29,7 @@ import javax.sound.midi.Track
 
 @Composable
 actual fun PlatformMidiPlayerButton(document: TabDocument, onPlayingEvent: (Int?) -> Unit) {
-    var playing by remember { mutableStateOf(false) }
+    var playbackState by remember { mutableStateOf(PlaybackState.STOPPED) }
     var error by remember { mutableStateOf<String?>(null) }
     var speedPercent by remember { mutableIntStateOf(100) }
     var showSpeedMenu by remember { mutableStateOf(false) }
@@ -37,34 +40,51 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, onPlayingEvent: (Int?
             eventCallback(null)
         }
     }
-    Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp)) {
-        OutlinedButton(onClick = {
-            if (playing) {
-                DesktopMidiPlayback.stop()
-                playing = false
-                eventCallback(null)
+    Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        Button(onClick = {
+            error = null
+            if (playbackState == PlaybackState.PLAYING) {
+                DesktopMidiPlayback.pause()
+                playbackState = PlaybackState.PAUSED
+            } else if (playbackState == PlaybackState.PAUSED) {
+                DesktopMidiPlayback.resume()
+                playbackState = PlaybackState.PLAYING
             } else {
-                error = null
                 runCatching {
                     DesktopMidiPlayback.play(document, speedPercent) { eventIndex ->
                         EventQueue.invokeLater {
                             eventCallback(eventIndex)
-                            if (eventIndex == null) playing = false
+                            if (eventIndex == null) playbackState = PlaybackState.STOPPED
                         }
                     }
-                    playing = true
+                    playbackState = PlaybackState.PLAYING
                 }.onFailure {
-                    playing = false
+                    playbackState = PlaybackState.STOPPED
                     error = it.message ?: "No MIDI output device is available."
                     eventCallback(null)
                 }
             }
-        }) { Text(if (playing) "Stop MIDI" else "Play MIDI") }
+        }) { Text(if (playbackState == PlaybackState.PLAYING) "Ⅱ Pause" else "▶ Play") }
+        OutlinedButton(onClick = {
+            DesktopMidiPlayback.stop()
+            playbackState = PlaybackState.STOPPED
+            eventCallback(null)
+        }, enabled = playbackState != PlaybackState.STOPPED) { Text("■ Stop") }
         Box {
-            OutlinedButton(onClick = { showSpeedMenu = true }) { Text("${speedPercent}%") }
+            OutlinedButton(
+                onClick = { showSpeedMenu = true },
+                modifier = Modifier.semantics { contentDescription = "Playback speed $speedPercent percent" }
+            ) { Text("🏃 ${speedPercent}% ▾") }
             DropdownMenu(expanded = showSpeedMenu, onDismissRequest = { showSpeedMenu = false }) {
-                listOf(100, 50, 25).forEach { speed ->
-                    DropdownMenuItem(text = { Text("$speed% speed") }, onClick = {
+                listOf(
+                    200 to "2× tempo",
+                    150 to "1.5× tempo",
+                    100 to "original tempo",
+                    75 to "75% tempo",
+                    50 to "half tempo",
+                    25 to "quarter tempo"
+                ).forEach { (speed, description) ->
+                    DropdownMenuItem(text = { Text("$speed% · $description") }, onClick = {
                         speedPercent = speed
                         DesktopMidiPlayback.setSpeed(speed)
                         showSpeedMenu = false
@@ -75,6 +95,8 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, onPlayingEvent: (Int?
         error?.let { Text(it, color = androidx.compose.material3.MaterialTheme.colorScheme.error) }
     }
 }
+
+private enum class PlaybackState { STOPPED, PLAYING, PAUSED }
 
 private object DesktopMidiPlayback {
     private const val PPQ = 480
@@ -94,7 +116,8 @@ private object DesktopMidiPlayback {
             .groupBy { it.eventIndex.coerceAtMost(document.events.size) }
         var tick = 0L
 
-        document.events.forEachIndexed { eventIndex, event ->
+        playbackEventIndices(document.events).forEach { eventIndex ->
+            val event = document.events[eventIndex]
             addMarker(track, "TAB_EVENT:$eventIndex", tick)
             tempoByEvent[eventIndex].orEmpty().forEach { addTempo(track, it.beatsPerMinute, tick) }
             signatureByEvent[eventIndex].orEmpty().forEach { addTimeSignature(track, it.beats, it.beatType, tick) }
@@ -140,20 +163,31 @@ private object DesktopMidiPlayback {
             }
         }
         nextSequencer.open()
-        nextSequencer.tempoFactor = speedPercent.coerceIn(25, 100) / 100f
+        nextSequencer.tempoFactor = speedPercent.coerceIn(25, 200) / 100f
         sequencer = nextSequencer
         nextSequencer.start()
     }
 
     @Synchronized
     fun setSpeed(speedPercent: Int) {
-        sequencer?.tempoFactor = speedPercent.coerceIn(25, 100) / 100f
+        sequencer?.tempoFactor = speedPercent.coerceIn(25, 200) / 100f
+    }
+
+    @Synchronized
+    fun pause() {
+        sequencer?.stop()
+    }
+
+    @Synchronized
+    fun resume() {
+        sequencer?.start()
     }
 
     @Synchronized
     fun stop() {
         sequencer?.let {
             runCatching { it.stop() }
+            runCatching { it.tickPosition = 0L }
             runCatching { it.close() }
         }
         sequencer = null

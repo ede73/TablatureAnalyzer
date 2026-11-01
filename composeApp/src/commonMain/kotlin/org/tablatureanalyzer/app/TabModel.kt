@@ -8,7 +8,12 @@ data class TabEvent(
     val lengthCodes: List<Int?> = List(frets.size) { null },
     /** MusicXML duration units, using the containing document's divisions per quarter. */
     val durationUnits: List<Int?> = List(frets.size) { null },
-    val restDurationUnits: Int? = null
+    val restDurationUnits: Int? = null,
+    /** Repeat begins immediately before this event. */
+    val repeatStartBefore: Boolean = false,
+    /** Repeat ends at this event's following bar line. */
+    val repeatEndAfter: Boolean = false,
+    val repeatCount: Int = 2
 )
 data class TabTempoChange(val eventIndex: Int, val beatsPerMinute: Int)
 data class TabTimeSignatureChange(val eventIndex: Int, val beats: Int, val beatType: Int)
@@ -25,13 +30,16 @@ object TabCodec {
 
     fun parse(source: String): TabDocument =
         if (source.contains("<score-partwise") || source.contains(":score-partwise")) MusicXmlCodec.parse(source)
-        else if (source.lineSequence().firstOrNull()?.trim() == "#Internalstatesavefile 0.1") parseInternal(source)
+        else if (source.lineSequence().firstOrNull()?.trim()?.startsWith("#Internalstatesavefile ") == true) parseInternal(source)
         else parseAsciiTab(source)
 
     /** Imports the original application's lossless, editable text format. */
     fun parseInternal(source: String): TabDocument {
         var strings = 6
         var tuning = defaultTuning
+        var divisions = 480
+        val tempos = mutableListOf<TabTempoChange>()
+        val signatures = mutableListOf<TabTimeSignatureChange>()
         val events = mutableListOf<TabEvent>()
         var barPending = false
         var headerComplete = false
@@ -51,9 +59,40 @@ object TabCodec {
                     }
                     headerComplete = true
                 }
+                line.startsWith("#divisions ") -> divisions = line.substringAfter(' ').toIntOrNull()?.coerceAtLeast(1) ?: divisions
+                line.startsWith("#tempo ") -> line.substringAfter(' ').split(',').mapNotNull(String::toIntOrNull).takeIf { it.size >= 2 }?.let {
+                    tempos += TabTempoChange(it[0].coerceAtLeast(0), it[1].coerceIn(1, 1000))
+                }
+                line.startsWith("#time ") -> line.substringAfter(' ').split(',').mapNotNull(String::toIntOrNull).takeIf { it.size >= 3 }?.let {
+                    signatures += TabTimeSignatureChange(it[0].coerceAtLeast(0), it[1].coerceAtLeast(1), it[2].coerceAtLeast(1))
+                }
                 line == "#bar" -> {
                     if (events.isNotEmpty()) events[events.lastIndex] = events.last().copy(barAfter = true)
                     else barPending = true
+                }
+                line == "#event" -> {
+                    events += TabEvent(List(strings) { null }, barAfter = barPending)
+                    barPending = false
+                }
+                line.startsWith("#rest ") -> {
+                    val values = line.substringAfter(' ').split(',').mapNotNull(String::toIntOrNull)
+                    if (values.size >= 2 && values[0] in events.indices) {
+                        val index = values[0]
+                        events[index] = events[index].copy(restDurationUnits = values[1].coerceAtLeast(1))
+                    }
+                }
+                line.startsWith("#repeat-start ") -> {
+                    val index = line.substringAfter(' ').toIntOrNull()
+                    if (index != null && index in events.indices) {
+                        events[index] = events[index].copy(repeatStartBefore = true)
+                    }
+                }
+                line.startsWith("#repeat-end ") -> {
+                    val values = line.substringAfter(' ').split(',').mapNotNull(String::toIntOrNull)
+                    if (values.size >= 2 && values[0] in events.indices) {
+                        val index = values[0]
+                        events[index] = events[index].copy(barAfter = true, repeatEndAfter = true, repeatCount = values[1].coerceIn(2, 16))
+                    }
                 }
                 line.startsWith("#") -> Unit // Preserve compatibility with legacy remarks/directives.
                 !headerComplete -> Unit
@@ -61,6 +100,7 @@ object TabCodec {
                     val frets = MutableList<Int?>(strings) { null }
                     val actions = MutableList<Char?>(strings) { null }
                     val lengths = MutableList<Int?>(strings) { null }
+                    val durations = MutableList<Int?>(strings) { null }
                     line.split('+').filter(String::isNotBlank).forEach { token ->
                         val fields = token.split(',')
                         if (fields.size >= 4) {
@@ -71,16 +111,17 @@ object TabCodec {
                                 frets[string] = fret
                                 lengths[string] = length?.takeIf { it in 1..12 }
                                 actions[string] = fields[3].trim().firstOrNull()?.takeUnless { it == '-' }
+                                durations[string] = fields.getOrNull(4)?.trim()?.toIntOrNull()?.takeIf { it > 0 }
                             }
                         }
                     }
-                    events += TabEvent(frets, actions, barPending, lengths)
+                    events += TabEvent(frets, actions, barPending, lengths, durations)
                     barPending = false
                 }
             }
         }
         if (barPending && events.isNotEmpty()) events[events.lastIndex] = events.last().copy(barAfter = true)
-        return TabDocument(tuning, events)
+        return TabDocument(tuning, events, divisions, tempos.ifEmpty { listOf(TabTempoChange(0, 120)) }, signatures.ifEmpty { listOf(TabTimeSignatureChange(0, 4, 4)) })
     }
 
     private fun parseAsciiTab(source: String): TabDocument {
@@ -148,17 +189,24 @@ object TabCodec {
 
     /** Writes the original editable format so fret, action, length, tuning and bars round-trip. */
     fun encodeInternal(document: TabDocument): String = buildString {
-        appendLine("#Internalstatesavefile 0.1")
+        appendLine("#Internalstatesavefile 0.3")
         appendLine("#strings ${document.tuning.size}")
         appendLine("#tuning ${document.tuning.joinToString(",")}")
-        document.events.forEach { event ->
+        appendLine("#divisions ${document.divisions.coerceAtLeast(1)}")
+        document.tempoChanges.forEach { appendLine("#tempo ${it.eventIndex.coerceAtLeast(0)},${it.beatsPerMinute.coerceIn(1, 1000)}") }
+        document.timeSignatures.forEach { appendLine("#time ${it.eventIndex.coerceAtLeast(0)},${it.beats.coerceAtLeast(1)},${it.beatType.coerceAtLeast(1)}") }
+        document.events.forEachIndexed { eventIndex, event ->
             val notes = event.frets.mapIndexedNotNull { string, fret ->
                 fret?.let {
                     val action = event.actions.getOrNull(string)?.toString() ?: "-"
-                    "${it},${string},${event.lengthCodes.getOrNull(string) ?: -1234},$action"
+                    val duration = event.durationUnits.getOrNull(string) ?: -1234
+                    "${it},${string},${event.lengthCodes.getOrNull(string) ?: -1234},$action,$duration"
                 }
             }
-            appendLine(notes.joinToString("+"))
+            if (notes.isEmpty()) appendLine("#event") else appendLine(notes.joinToString("+"))
+            event.restDurationUnits?.let { appendLine("#rest $eventIndex,${it.coerceAtLeast(1)}") }
+            if (event.repeatStartBefore) appendLine("#repeat-start $eventIndex")
+            if (event.repeatEndAfter) appendLine("#repeat-end $eventIndex,${event.repeatCount.coerceIn(2, 16)}")
             if (event.barAfter) appendLine("#bar")
         }
     }
@@ -180,13 +228,14 @@ object TabCodec {
 
 private fun Char.isAction(): Boolean = this in "sS/\\hHpPtT^~bB)vVrR"
 
-/** Add a note to a vacant string at an existing event; if occupied, insert a new event before it. */
+/** Add a note at an event position, extending the tab with empty positions when needed. */
 fun addNoteAt(document: TabDocument, eventIndex: Int, stringIndex: Int, fret: Int, lengthCode: Int? = null): TabDocument {
     if (stringIndex !in document.tuning.indices || fret !in 0..36) return document
     val events = document.events.toMutableList()
-    val index = eventIndex.coerceIn(0, events.size)
-    val existing = events.getOrNull(index)
-    if (existing != null && existing.frets.getOrNull(stringIndex) == null) {
+    val index = eventIndex.coerceAtLeast(0)
+    while (events.size <= index) events += TabEvent(List(document.tuning.size) { null })
+    val existing = events[index]
+    if (existing.frets.getOrNull(stringIndex) == null) {
         val frets = existing.frets.toMutableList()
         val actions = existing.actions.toMutableList()
         val lengths = existing.lengthCodes.toMutableList()
@@ -217,29 +266,118 @@ fun setNoteLengthAt(document: TabDocument, eventIndex: Int, stringIndex: Int, le
     })
 }
 
-/** Append an empty event position to the tab so the user can add notes to it. */
-fun addTabPosition(document: TabDocument): TabDocument =
-    document.copy(events = document.events + TabEvent(List(document.tuning.size) { null }))
+/** Set a legacy duration on every selected note, preserving imported exact durations elsewhere. */
+fun setNoteLengthsAt(document: TabDocument, positions: Set<NotePosition>, lengthCode: Int): TabDocument {
+    if (lengthCode !in 1..12 || positions.isEmpty()) return document
+    val events = document.events.toMutableList()
+    positions.groupBy { it.eventIndex }.forEach { (eventIndex, selected) ->
+        val event = events.getOrNull(eventIndex) ?: return@forEach
+        val lengths = event.lengthCodes.toMutableList()
+        val durations = event.durationUnits.toMutableList()
+        selected.forEach { position ->
+            if (position.stringIndex in event.frets.indices && event.frets[position.stringIndex] != null) {
+                lengths[position.stringIndex] = lengthCode
+                durations[position.stringIndex] = null // Chosen legacy value takes precedence over imported exact units.
+            }
+        }
+        events[eventIndex] = event.copy(lengthCodes = lengths, durationUnits = durations)
+    }
+    return document.copy(events = events)
+}
 
 fun removeMeasureBar(document: TabDocument, eventIndex: Int): TabDocument {
     val event = document.events.getOrNull(eventIndex) ?: return document
     if (!event.barAfter) return document
-    return document.copy(events = document.events.toMutableList().also { it[eventIndex] = event.copy(barAfter = false) })
+    return document.copy(events = document.events.toMutableList().also { it[eventIndex] = event.copy(barAfter = false, repeatEndAfter = false) })
 }
 
 fun addMeasureBar(document: TabDocument, eventIndex: Int): TabDocument {
-    val event = document.events.getOrNull(eventIndex) ?: return document
+    val index = eventIndex.coerceAtLeast(0)
+    val events = document.events.toMutableList()
+    while (events.size <= index) events += TabEvent(List(document.tuning.size) { null })
+    val event = events[index]
     if (event.barAfter) return document
-    return document.copy(events = document.events.toMutableList().also { it[eventIndex] = event.copy(barAfter = true) })
+    events[index] = event.copy(barAfter = true)
+    return document.copy(events = events)
+}
+
+fun addRepeatStart(document: TabDocument, eventIndex: Int): TabDocument {
+    val index = eventIndex.coerceAtLeast(0)
+    val events = document.events.toMutableList()
+    while (events.size <= index) events += TabEvent(List(document.tuning.size) { null })
+    if (events[index].repeatStartBefore) return document
+    if (index > 0) events[index - 1] = events[index - 1].copy(barAfter = true)
+    events[index] = events[index].copy(repeatStartBefore = true)
+    return document.copy(events = events)
+}
+
+fun addRepeatEnd(document: TabDocument, eventIndex: Int): TabDocument {
+    val index = eventIndex.coerceAtLeast(0)
+    val events = document.events.toMutableList()
+    while (events.size <= index) events += TabEvent(List(document.tuning.size) { null })
+    events[index] = events[index].copy(barAfter = true, repeatEndAfter = true, repeatCount = events[index].repeatCount.coerceIn(2, 16))
+    return document.copy(events = events)
+}
+
+fun adjustRepeatCount(document: TabDocument, eventIndex: Int, delta: Int): TabDocument {
+    val event = document.events.getOrNull(eventIndex) ?: return document
+    if (!event.repeatEndAfter || delta == 0) return document
+    val events = document.events.toMutableList()
+    events[eventIndex] = event.copy(repeatCount = (event.repeatCount + delta).coerceIn(2, 16))
+    return document.copy(events = events)
+}
+
+/** Expands measure repeats into event visits for playback; event indices remain tied to the source tab. */
+fun playbackEventIndices(events: List<TabEvent>): List<Int> {
+    val visits = mutableListOf<Int>()
+    val repeatStarts = mutableListOf<Int>()
+    val repeatPasses = mutableMapOf<Int, Int>()
+    var currentStart = 0
+    var index = 0
+    while (index < events.size) {
+        check(visits.size < 1_000_000) { "Repeat playback would exceed one million event visits." }
+        val event = events[index]
+        if (event.repeatStartBefore && repeatStarts.lastOrNull() != index) {
+            repeatStarts += index
+        }
+        visits += index
+        if (event.repeatEndAfter) {
+            currentStart = repeatStarts.lastOrNull() ?: 0
+            val count = event.repeatCount.coerceIn(2, 16)
+            val completedPasses = repeatPasses[index] ?: 1
+            if (completedPasses < count) {
+                repeatPasses[index] = completedPasses + 1
+                index = currentStart
+                continue
+            }
+            repeatPasses.remove(index)
+            if (repeatStarts.lastOrNull() == currentStart) repeatStarts.removeAt(repeatStarts.lastIndex)
+        }
+        index++
+    }
+    return visits
+}
+
+fun removeMeasureMarker(document: TabDocument, eventIndex: Int): TabDocument {
+    val event = document.events.getOrNull(eventIndex) ?: return document
+    if (!event.barAfter && !event.repeatEndAfter && !event.repeatStartBefore) return document
+    val events = document.events.toMutableList()
+    events[eventIndex] = event.copy(barAfter = false, repeatStartBefore = false, repeatEndAfter = false)
+    return document.copy(events = events)
 }
 
 fun moveMeasureBar(document: TabDocument, fromEvent: Int, toEvent: Int): TabDocument {
     val source = document.events.getOrNull(fromEvent) ?: return document
     val target = document.events.getOrNull(toEvent) ?: return document
-    if (!source.barAfter || fromEvent == toEvent || target.barAfter) return document
+    if ((!source.barAfter && !source.repeatStartBefore && !source.repeatEndAfter) || fromEvent == toEvent || target.barAfter || target.repeatStartBefore || target.repeatEndAfter) return document
     val events = document.events.toMutableList()
-    events[fromEvent] = source.copy(barAfter = false)
-    events[toEvent] = target.copy(barAfter = true)
+    events[fromEvent] = source.copy(barAfter = false, repeatStartBefore = false, repeatEndAfter = false)
+    events[toEvent] = target.copy(
+        barAfter = source.barAfter || source.repeatEndAfter,
+        repeatStartBefore = source.repeatStartBefore,
+        repeatEndAfter = source.repeatEndAfter,
+        repeatCount = source.repeatCount
+    )
     return document.copy(events = events)
 }
 
@@ -256,7 +394,7 @@ fun deleteNoteAt(document: TabDocument, eventIndex: Int, stringIndex: Int): TabD
     lengths[stringIndex] = null
     durations[stringIndex] = null
     val events = document.events.toMutableList()
-    if (frets.none { it != null } && !event.barAfter) events.removeAt(eventIndex)
+    if (frets.none { it != null } && !event.barAfter && !event.repeatStartBefore && !event.repeatEndAfter) events.removeAt(eventIndex)
     else events[eventIndex] = event.copy(frets = frets, actions = actions, lengthCodes = lengths, durationUnits = durations)
     return document.copy(events = events)
 }
@@ -281,6 +419,15 @@ fun moveNote(document: TabDocument, eventIndex: Int, fromString: Int, toString: 
     durations[toString] = durations.getOrNull(fromString)
     durations[fromString] = null
     return document.copy(events = document.events.toMutableList().also { it[eventIndex] = event.copy(frets = changed, actions = actions, lengthCodes = lengths, durationUnits = durations) })
+}
+
+/** Change one note's fret without changing its rhythmic position or articulation. */
+fun setNoteFret(document: TabDocument, eventIndex: Int, stringIndex: Int, fret: Int): TabDocument {
+    if (fret !in 0..36 || stringIndex !in document.tuning.indices) return document
+    val event = document.events.getOrNull(eventIndex) ?: return document
+    if (event.frets.getOrNull(stringIndex) == null || event.frets[stringIndex] == fret) return document
+    val frets = event.frets.toMutableList().also { it[stringIndex] = fret }
+    return document.copy(events = document.events.toMutableList().also { it[eventIndex] = event.copy(frets = frets) })
 }
 
 /** Move to the nearest playable empty string in the requested direction, preserving pitch. */
@@ -360,7 +507,12 @@ data class GroupFretRequest(
     val selectedNotes: Set<NotePosition> = emptySet()
 )
 
-data class GroupFretResult(val document: TabDocument, val applied: Boolean, val message: String)
+data class GroupFretResult(
+    val document: TabDocument,
+    val applied: Boolean,
+    val message: String,
+    val movedSelection: Set<NotePosition> = emptySet()
+)
 
 /** Experimental port of the legacy fret-bound and transpose controls. */
 fun applyGroupFretOperation(document: TabDocument, request: GroupFretRequest): GroupFretResult {
@@ -381,6 +533,7 @@ fun applyGroupFretOperation(document: TabDocument, request: GroupFretRequest): G
         return GroupFretResult(document, false, "Rectangle-select notes first; each selection adds to the current selection.")
     }
     var movedNotes = 0
+    val movedSelection = linkedSetOf<NotePosition>()
     val transformed = mutableListOf<TabEvent>()
     for ((eventIndex, event) in document.events.withIndex()) {
         val notes = event.frets.mapIndexedNotNull { string, fret ->
@@ -444,17 +597,18 @@ fun applyGroupFretOperation(document: TabDocument, request: GroupFretRequest): G
             lengths[placement.string] = note.lengthCode
             durations[placement.string] = note.durationUnits
             if (placement.string != note.sourceString) movedNotes++
+            if (note.selected) movedSelection += NotePosition(eventIndex, placement.string)
         }
         transformed += event.copy(frets = frets, actions = actions, lengthCodes = lengths, durationUnits = durations)
     }
 
     val operationName = when (request.operation) {
-        GroupFretOperation.RAISE_MINIMUM -> "Apply lower limit to selected notes"
-        GroupFretOperation.LOWER_MAXIMUM -> "Apply upper limit to selected notes"
+        GroupFretOperation.RAISE_MINIMUM -> "Minimum fret updated for selected notes"
+        GroupFretOperation.LOWER_MAXIMUM -> "Maximum fret updated for selected notes"
         GroupFretOperation.TRANSPOSE -> "Transpose entire song by ${request.semitones} semitones"
     }
     val message = if (movedNotes == 0) "$operationName: no notes needed to move." else "$operationName: repositioned $movedNotes note${if (movedNotes == 1) "" else "s"}."
-    return GroupFretResult(document.copy(events = transformed), true, message)
+    return GroupFretResult(document.copy(events = transformed), true, message, movedSelection)
 }
 
 private data class NoteToPlace(val sourceString: Int, val pitch: Int, val action: Char?, val lengthCode: Int?, val durationUnits: Int?, val selected: Boolean)

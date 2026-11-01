@@ -9,6 +9,9 @@ expect fun PlatformOpenTabButton(onText: (String) -> Unit)
 expect fun PlatformSaveMusicXmlButton(contents: String)
 
 @Composable
+expect fun PlatformSaveProjectButton(contents: String)
+
+@Composable
 expect fun PlatformMidiPlayerButton(document: TabDocument, onPlayingEvent: (Int?) -> Unit)
 
 expect object PlatformPreferences {
