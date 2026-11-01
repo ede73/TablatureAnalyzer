@@ -12,7 +12,7 @@ expect fun PlatformSaveMusicXmlButton(contents: String)
 expect fun PlatformSaveProjectButton(contents: String)
 
 @Composable
-expect fun PlatformMidiPlayerButton(document: TabDocument, onPlayingEvent: (Int?) -> Unit)
+expect fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int?, durationPreviewRequestId: Int, onPlayingEvent: (Int?) -> Unit)
 
 expect object PlatformPreferences {
     fun get(key: String): String?

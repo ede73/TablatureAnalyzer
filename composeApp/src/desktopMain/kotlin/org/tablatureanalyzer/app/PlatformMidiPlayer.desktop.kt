@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,12 +29,39 @@ import javax.sound.midi.ShortMessage
 import javax.sound.midi.Track
 
 @Composable
-actual fun PlatformMidiPlayerButton(document: TabDocument, onPlayingEvent: (Int?) -> Unit) {
+actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int?, durationPreviewRequestId: Int, onPlayingEvent: (Int?) -> Unit) {
     var playbackState by remember { mutableStateOf(PlaybackState.STOPPED) }
+    var playbackKind by remember { mutableStateOf(PlaybackKind.FULL_TAB) }
     var error by remember { mutableStateOf<String?>(null) }
     var speedPercent by remember { mutableIntStateOf(100) }
     var showSpeedMenu by remember { mutableStateOf(false) }
     val eventCallback by rememberUpdatedState(onPlayingEvent)
+    fun playDurationContext() {
+        val eventIndex = replayEventIndex ?: return
+        val previewRange = selectedNoteContextRange(document, eventIndex) ?: return
+        error = null
+        runCatching {
+            playbackKind = PlaybackKind.PREVIEW
+            DesktopMidiPlayback.play(document, speedPercent, onEvent = { playedEvent ->
+                EventQueue.invokeLater {
+                    eventCallback(playedEvent)
+                    if (playedEvent == null) {
+                        playbackState = PlaybackState.STOPPED
+                        playbackKind = PlaybackKind.FULL_TAB
+                    }
+                }
+            }, eventRange = previewRange, loopCount = 1)
+            playbackState = PlaybackState.PLAYING
+        }.onFailure {
+            playbackState = PlaybackState.STOPPED
+            playbackKind = PlaybackKind.FULL_TAB
+            error = it.message ?: "No MIDI output device is available."
+            eventCallback(null)
+        }
+    }
+    LaunchedEffect(durationPreviewRequestId) {
+        if (durationPreviewRequestId > 0) playDurationContext()
+    }
     DisposableEffect(Unit) {
         onDispose {
             DesktopMidiPlayback.stop()
@@ -43,31 +71,40 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, onPlayingEvent: (Int?
     Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
         Button(onClick = {
             error = null
-            if (playbackState == PlaybackState.PLAYING) {
+            if (playbackState == PlaybackState.PLAYING && playbackKind == PlaybackKind.FULL_TAB) {
                 DesktopMidiPlayback.pause()
                 playbackState = PlaybackState.PAUSED
-            } else if (playbackState == PlaybackState.PAUSED) {
+            } else if (playbackState == PlaybackState.PAUSED && playbackKind == PlaybackKind.FULL_TAB) {
                 DesktopMidiPlayback.resume()
                 playbackState = PlaybackState.PLAYING
             } else {
                 runCatching {
-                    DesktopMidiPlayback.play(document, speedPercent) { eventIndex ->
+                    playbackKind = PlaybackKind.FULL_TAB
+                    DesktopMidiPlayback.play(document, speedPercent, onEvent = { eventIndex ->
                         EventQueue.invokeLater {
                             eventCallback(eventIndex)
-                            if (eventIndex == null) playbackState = PlaybackState.STOPPED
+                            if (eventIndex == null) {
+                                playbackState = PlaybackState.STOPPED
+                                playbackKind = PlaybackKind.FULL_TAB
+                            }
                         }
-                    }
+                    })
                     playbackState = PlaybackState.PLAYING
                 }.onFailure {
                     playbackState = PlaybackState.STOPPED
+                    playbackKind = PlaybackKind.FULL_TAB
                     error = it.message ?: "No MIDI output device is available."
                     eventCallback(null)
                 }
             }
-        }) { Text(if (playbackState == PlaybackState.PLAYING) "Ⅱ Pause" else "▶ Play") }
+        }, modifier = Modifier.semantics {
+            contentDescription = if (playbackState == PlaybackState.PLAYING && playbackKind == PlaybackKind.FULL_TAB) "Pause full-tab playback"
+            else "Play full tab from the beginning"
+        }) { Text(if (playbackState == PlaybackState.PLAYING && playbackKind == PlaybackKind.FULL_TAB) "Ⅱ Pause" else "▶ Play") }
         OutlinedButton(onClick = {
             DesktopMidiPlayback.stop()
             playbackState = PlaybackState.STOPPED
+            playbackKind = PlaybackKind.FULL_TAB
             eventCallback(null)
         }, enabled = playbackState != PlaybackState.STOPPED) { Text("■ Stop") }
         Box {
@@ -97,13 +134,23 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, onPlayingEvent: (Int?
 }
 
 private enum class PlaybackState { STOPPED, PLAYING, PAUSED }
+private enum class PlaybackKind { FULL_TAB, PREVIEW }
+
+private fun selectedNoteContextRange(document: TabDocument, selectedEvent: Int): IntRange? {
+    val noteEvents = document.events.indices.filter { document.events[it].frets.any { fret -> fret != null } }
+    val selectedPosition = noteEvents.indexOf(selectedEvent)
+    if (selectedPosition < 0) return null
+    val start = noteEvents[(selectedPosition - 4).coerceAtLeast(0)]
+    val end = noteEvents[(selectedPosition + 4).coerceAtMost(noteEvents.lastIndex)]
+    return start..end
+}
 
 private object DesktopMidiPlayback {
     private const val PPQ = 480
     private var sequencer: javax.sound.midi.Sequencer? = null
 
     @Synchronized
-    fun play(document: TabDocument, speedPercent: Int, onEvent: (Int?) -> Unit) {
+    fun play(document: TabDocument, speedPercent: Int, onEvent: (Int?) -> Unit, eventRange: IntRange? = null, loopCount: Int = 0) {
         stop()
         val nextSequencer = MidiSystem.getSequencer() ?: error("No MIDI sequencer is available.")
         val sequence = Sequence(Sequence.PPQ, PPQ)
@@ -116,7 +163,7 @@ private object DesktopMidiPlayback {
             .groupBy { it.eventIndex.coerceAtMost(document.events.size) }
         var tick = 0L
 
-        playbackEventIndices(document.events).forEach { eventIndex ->
+        playbackEventIndices(document.events).filter { eventIndex -> eventRange == null || eventIndex in eventRange }.forEach { eventIndex ->
             val event = document.events[eventIndex]
             addMarker(track, "TAB_EVENT:$eventIndex", tick)
             tempoByEvent[eventIndex].orEmpty().forEach { addTempo(track, it.beatsPerMinute, tick) }
@@ -151,19 +198,27 @@ private object DesktopMidiPlayback {
                 }
             } else if (message.type == 0x2F) {
                 EventQueue.invokeLater {
-                    synchronized(DesktopMidiPlayback) {
+                    val endedCurrentSequence = synchronized(DesktopMidiPlayback) {
                         if (sequencer === nextSequencer) {
                             nextSequencer.stop()
                             nextSequencer.close()
                             sequencer = null
+                            true
+                        } else {
+                            false
                         }
                     }
-                    onEvent(null)
+                    if (endedCurrentSequence) onEvent(null)
                 }
             }
         }
         nextSequencer.open()
         nextSequencer.tempoFactor = speedPercent.coerceIn(25, 200) / 100f
+        if (loopCount > 0) {
+            nextSequencer.loopStartPoint = 0L
+            nextSequencer.loopEndPoint = sequence.tickLength
+            nextSequencer.loopCount = loopCount
+        }
         sequencer = nextSequencer
         nextSequencer.start()
     }
