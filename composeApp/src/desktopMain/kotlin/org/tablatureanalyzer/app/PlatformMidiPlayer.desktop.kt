@@ -25,11 +25,12 @@ import javax.sound.midi.MetaMessage
 import javax.sound.midi.MidiEvent
 import javax.sound.midi.MidiSystem
 import javax.sound.midi.Sequence
+import javax.sound.midi.Sequencer
 import javax.sound.midi.ShortMessage
 import javax.sound.midi.Track
 
 @Composable
-actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int?, durationPreviewRequestId: Int, onPlayingEvent: (Int?) -> Unit) {
+actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int?, durationPreviewRequestId: Int, playheadEventIndex: Int, selectedPlaybackRange: IntRange?, onPlayingEvent: (Int?) -> Unit) {
     var playbackState by remember { mutableStateOf(PlaybackState.STOPPED) }
     var playbackKind by remember { mutableStateOf(PlaybackKind.FULL_TAB) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -71,15 +72,21 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int
     Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(4.dp), verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
         Button(onClick = {
             error = null
-            if (playbackState == PlaybackState.PLAYING && playbackKind == PlaybackKind.FULL_TAB) {
+            if (playbackState == PlaybackState.PLAYING && playbackKind != PlaybackKind.PREVIEW) {
                 DesktopMidiPlayback.pause()
                 playbackState = PlaybackState.PAUSED
-            } else if (playbackState == PlaybackState.PAUSED && playbackKind == PlaybackKind.FULL_TAB) {
+            } else if (playbackState == PlaybackState.PAUSED && playbackKind != PlaybackKind.PREVIEW) {
                 DesktopMidiPlayback.resume()
                 playbackState = PlaybackState.PLAYING
             } else {
                 runCatching {
-                    playbackKind = PlaybackKind.FULL_TAB
+                    val safeSelection = selectedPlaybackRange?.let { range ->
+                        range.first.coerceAtLeast(0)..range.last.coerceAtMost(document.events.lastIndex)
+                    }?.takeIf { document.events.isNotEmpty() && it.first <= it.last }
+                    val startRange = safeSelection ?: if (document.events.isNotEmpty()) {
+                        playheadEventIndex.coerceIn(0, document.events.lastIndex)..document.events.lastIndex
+                    } else null
+                    playbackKind = if (safeSelection == null) PlaybackKind.FULL_TAB else PlaybackKind.SELECTION_LOOP
                     DesktopMidiPlayback.play(document, speedPercent, onEvent = { eventIndex ->
                         EventQueue.invokeLater {
                             eventCallback(eventIndex)
@@ -88,7 +95,7 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int
                                 playbackKind = PlaybackKind.FULL_TAB
                             }
                         }
-                    })
+                    }, eventRange = startRange, loopCount = if (safeSelection == null) 0 else Sequencer.LOOP_CONTINUOUSLY)
                     playbackState = PlaybackState.PLAYING
                 }.onFailure {
                     playbackState = PlaybackState.STOPPED
@@ -98,9 +105,14 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int
                 }
             }
         }, modifier = Modifier.semantics {
-            contentDescription = if (playbackState == PlaybackState.PLAYING && playbackKind == PlaybackKind.FULL_TAB) "Pause full-tab playback"
-            else "Play full tab from the beginning"
-        }) { Text(if (playbackState == PlaybackState.PLAYING && playbackKind == PlaybackKind.FULL_TAB) "Ⅱ Pause" else "▶ Play") }
+            contentDescription = when {
+                playbackState == PlaybackState.PLAYING && playbackKind == PlaybackKind.SELECTION_LOOP -> "Pause selected passage loop"
+                playbackState == PlaybackState.PLAYING && playbackKind == PlaybackKind.FULL_TAB -> "Pause tab playback"
+                selectedPlaybackRange != null -> "Play selected passage in a loop"
+                playheadEventIndex > 0 -> "Play from the selected tab position to the end"
+                else -> "Play full tab from the beginning"
+            }
+        }) { Text(if (playbackState == PlaybackState.PLAYING && playbackKind != PlaybackKind.PREVIEW) "Ⅱ Pause" else "▶ Play") }
         OutlinedButton(onClick = {
             DesktopMidiPlayback.stop()
             playbackState = PlaybackState.STOPPED
@@ -134,7 +146,7 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int
 }
 
 private enum class PlaybackState { STOPPED, PLAYING, PAUSED }
-private enum class PlaybackKind { FULL_TAB, PREVIEW }
+private enum class PlaybackKind { FULL_TAB, PREVIEW, SELECTION_LOOP }
 
 private fun selectedNoteContextRange(document: TabDocument, selectedEvent: Int): IntRange? {
     val noteEvents = document.events.indices.filter { document.events[it].frets.any { fret -> fret != null } }
@@ -162,6 +174,15 @@ private object DesktopMidiPlayback {
         val signatureByEvent = document.timeSignatures.filter { it.eventIndex >= 0 }
             .groupBy { it.eventIndex.coerceAtMost(document.events.size) }
         var tick = 0L
+
+        // A playback range starts its MIDI sequence at tick zero, so carry forward
+        // the most recent tempo change that happened before the range begins.
+        eventRange?.first?.let { rangeStart ->
+            document.tempoChanges
+                .filter { it.eventIndex in 0 until rangeStart }
+                .maxByOrNull { it.eventIndex }
+                ?.let { addTempo(track, it.beatsPerMinute, tick) }
+        }
 
         playbackEventIndices(document.events).filter { eventIndex -> eventRange == null || eventIndex in eventRange }.forEach { eventIndex ->
             val event = document.events[eventIndex]
@@ -214,7 +235,7 @@ private object DesktopMidiPlayback {
         }
         nextSequencer.open()
         nextSequencer.tempoFactor = speedPercent.coerceIn(25, 200) / 100f
-        if (loopCount > 0) {
+        if (loopCount != 0) {
             nextSequencer.loopStartPoint = 0L
             nextSequencer.loopEndPoint = sequence.tickLength
             nextSequencer.loopCount = loopCount
