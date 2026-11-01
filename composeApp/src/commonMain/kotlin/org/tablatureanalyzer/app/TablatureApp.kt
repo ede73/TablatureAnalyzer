@@ -359,7 +359,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
     var minimumFret by remember { mutableStateOf("0") }
     var maximumFret by remember { mutableStateOf("12") }
     var transposeSemitones by remember { mutableStateOf("0") }
-    var showTransposeControls by remember { mutableStateOf(false) }
+    var showFretTools by remember { mutableStateOf(false) }
     var groupTransformMessage by remember { mutableStateOf("") }
     var selectedNotes by remember { mutableStateOf(emptySet<NotePosition>()) }
     var selectedRestEvent by remember { mutableIntStateOf(-1) }
@@ -1062,41 +1062,42 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                     }
         Spacer(Modifier.height(10.dp))
         Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(12.dp)) {
-                        Column(Modifier.fillMaxWidth().padding(8.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Text("Fret range", fontSize = 13.sp, color = ink, fontWeight = FontWeight.Medium)
-                                OutlinedTextField(minimumFret, { value ->
-                                    minimumFret = value.filter(Char::isDigit).take(2)
-                                    applyFretLimitEdit(GroupFretOperation.RAISE_MINIMUM, minimumFret)
-                                }, Modifier.width(84.dp), label = { Text("Min") }, singleLine = true)
-                                Text("to", color = muted)
-                                OutlinedTextField(maximumFret, { value ->
-                                    maximumFret = value.filter(Char::isDigit).take(2)
-                                    applyFretLimitEdit(GroupFretOperation.LOWER_MAXIMUM, maximumFret)
-                                }, Modifier.width(84.dp), label = { Text("Max") }, singleLine = true)
-                                TextButton(onClick = { showTransposeControls = !showTransposeControls }) {
-                                    Text(if (showTransposeControls) "Transpose song ▴" else "Transpose song ▾")
-                                }
+            Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { showFretTools = !showFretTools }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
+                        Text(if (showFretTools) "Fret range & transpose ▴" else "Fret range & transpose ▾")
+                    }
+                }
+                if (showFretTools) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Fret range", fontSize = 13.sp, color = ink, fontWeight = FontWeight.Medium)
+                        OutlinedTextField(minimumFret, { value ->
+                            minimumFret = value.filter(Char::isDigit).take(2)
+                            applyFretLimitEdit(GroupFretOperation.RAISE_MINIMUM, minimumFret)
+                        }, Modifier.width(84.dp), label = { Text("Min") }, singleLine = true)
+                        Text("to", color = muted)
+                        OutlinedTextField(maximumFret, { value ->
+                            maximumFret = value.filter(Char::isDigit).take(2)
+                            applyFretLimitEdit(GroupFretOperation.LOWER_MAXIMUM, maximumFret)
+                        }, Modifier.width(84.dp), label = { Text("Max") }, singleLine = true)
+                        Text("Transpose song", fontSize = 13.sp, color = ink, fontWeight = FontWeight.Medium)
+                        OutlinedTextField(transposeSemitones, { raw ->
+                            transposeSemitones = raw.filterIndexed { index, char -> char.isDigit() || index == 0 && char == '-' }.take(3)
+                        }, Modifier.width(112.dp), label = { Text("Semitones", maxLines = 1) }, singleLine = true)
+                        Button(
+                            enabled = transposeSemitones.toIntOrNull()?.let { it in -48..48 && it != 0 } == true,
+                            onClick = {
+                                val result = onGroupTransform(GroupFretRequest(GroupFretOperation.TRANSPOSE, minimumFret.toIntOrNull() ?: -1, maximumFret.toIntOrNull() ?: -1, transposeSemitones.toIntOrNull() ?: 999))
+                                groupTransformMessage = result.message
+                                if (result.applied) selectedNotes = emptySet()
                             }
-                            if (showTransposeControls) {
-                                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    OutlinedTextField(transposeSemitones, { raw ->
-                                        transposeSemitones = raw.filterIndexed { index, char -> char.isDigit() || index == 0 && char == '-' }.take(3)
-                                    }, Modifier.width(112.dp), label = { Text("Semitones", maxLines = 1) }, singleLine = true)
-                                    Button(
-                                        enabled = transposeSemitones.toIntOrNull()?.let { it in -48..48 && it != 0 } == true,
-                                        onClick = {
-                                            val result = onGroupTransform(GroupFretRequest(GroupFretOperation.TRANSPOSE, minimumFret.toIntOrNull() ?: -1, maximumFret.toIntOrNull() ?: -1, transposeSemitones.toIntOrNull() ?: 999))
-                                            groupTransformMessage = result.message
-                                            if (result.applied) selectedNotes = emptySet()
-                                        }
-                                    ) { Text("Transpose") }
-                                }
-                            }
-                            if (groupTransformMessage.isNotBlank()) {
-                                Text(groupTransformMessage, fontSize = 12.sp, color = if (groupTransformMessage.contains("Could not") || groupTransformMessage.contains("must be") || groupTransformMessage.contains("Select notes")) error else muted)
-                            }
-                        }
+                        ) { Text("Transpose") }
+                    }
+                    if (groupTransformMessage.isNotBlank()) {
+                        Text(groupTransformMessage, fontSize = 12.sp, color = if (groupTransformMessage.contains("Could not") || groupTransformMessage.contains("must be") || groupTransformMessage.contains("Select notes")) error else muted)
+                    }
+                }
+            }
         }
     }
 }
