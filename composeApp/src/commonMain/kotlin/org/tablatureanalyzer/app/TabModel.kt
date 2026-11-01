@@ -8,6 +8,7 @@ data class TabEvent(
     val lengthCodes: List<Int?> = List(frets.size) { null },
     /** MusicXML duration units, using the containing document's divisions per quarter. */
     val durationUnits: List<Int?> = List(frets.size) { null },
+    /** When set, this position plays/renders as one rest; frets remain as the reversible source note. */
     val restDurationUnits: Int? = null,
     /** Repeat begins immediately before this event. */
     val repeatStartBefore: Boolean = false,
@@ -214,7 +215,9 @@ object TabCodec {
     fun encode(document: TabDocument): String {
         val rows = MutableList(document.tuning.size) { StringBuilder() }
         document.events.forEach { event ->
-            val tokens = event.frets.mapIndexed { string, fret -> fret?.toString()?.plus(event.actions.getOrNull(string) ?: "") ?: "-" }
+            val tokens = event.frets.mapIndexed { string, fret ->
+                if (event.restDurationUnits != null) "-" else fret?.toString()?.plus(event.actions.getOrNull(string) ?: "") ?: "-"
+            }
             val tokenWidth = tokens.maxOfOrNull(String::length) ?: 1
             tokens.forEachIndexed { string, token -> rows[string].append(token.padEnd(tokenWidth, '-')) }
             if (event.barAfter) rows.forEach { it.append('|') }
@@ -235,7 +238,17 @@ fun addNoteAt(document: TabDocument, eventIndex: Int, stringIndex: Int, fret: In
     val index = eventIndex.coerceAtLeast(0)
     while (events.size <= index) events += TabEvent(List(document.tuning.size) { null })
     val existing = events[index]
-    if (existing.frets.getOrNull(stringIndex) == null) {
+    if (existing.restDurationUnits != null) {
+        val frets = MutableList<Int?>(document.tuning.size) { null }.also { it[stringIndex] = fret }
+        val lengths = MutableList<Int?>(document.tuning.size) { null }.also { it[stringIndex] = lengthCode }
+        events[index] = existing.copy(
+            frets = frets,
+            actions = MutableList(document.tuning.size) { null },
+            lengthCodes = lengths,
+            durationUnits = MutableList(document.tuning.size) { null },
+            restDurationUnits = null
+        )
+    } else if (existing.frets.getOrNull(stringIndex) == null) {
         val frets = existing.frets.toMutableList()
         val actions = existing.actions.toMutableList()
         val lengths = existing.lengthCodes.toMutableList()
@@ -244,7 +257,7 @@ fun addNoteAt(document: TabDocument, eventIndex: Int, stringIndex: Int, fret: In
         actions[stringIndex] = null
         lengths[stringIndex] = lengthCode
         durations[stringIndex] = null
-        events[index] = existing.copy(frets = frets, actions = actions, lengthCodes = lengths, durationUnits = durations)
+        events[index] = existing.copy(frets = frets, actions = actions, lengthCodes = lengths, durationUnits = durations, restDurationUnits = null)
     } else {
         val frets = MutableList<Int?>(document.tuning.size) { null }.also { it[stringIndex] = fret }
         val lengths = MutableList<Int?>(document.tuning.size) { null }.also { it[stringIndex] = lengthCode }
@@ -284,6 +297,56 @@ fun setNoteLengthsAt(document: TabDocument, positions: Set<NotePosition>, length
     }
     return document.copy(events = events)
 }
+
+/** Mark each selected event position as one musical rest, preserving notes so the toggle can restore them. */
+fun convertEventsToRests(document: TabDocument, eventIndices: Set<Int>): TabDocument {
+    if (eventIndices.isEmpty()) return document
+    val events = document.events.toMutableList()
+    eventIndices.forEach { eventIndex ->
+        val event = events.getOrNull(eventIndex) ?: return@forEach
+        if (event.restDurationUnits != null || event.frets.none { it != null }) return@forEach
+        val duration = event.frets.indices.mapNotNull { string ->
+            if (event.frets[string] == null) null
+            else event.durationUnits.getOrNull(string)
+                ?: event.lengthCodes.getOrNull(string)?.let { durationUnitsForLengthCode(it, document.divisions) }
+                ?: document.divisions
+        }.maxOrNull() ?: document.divisions
+        events[eventIndex] = event.copy(restDurationUnits = duration.coerceAtLeast(1))
+    }
+    return document.copy(events = events)
+}
+
+fun removeRestAt(document: TabDocument, eventIndex: Int): TabDocument {
+    val event = document.events.getOrNull(eventIndex) ?: return document
+    if (event.restDurationUnits == null) return document
+    return document.copy(events = document.events.toMutableList().also {
+        it[eventIndex] = event.copy(restDurationUnits = null)
+    })
+}
+
+fun setRestLengthAt(document: TabDocument, eventIndex: Int, lengthCode: Int): TabDocument {
+    val event = document.events.getOrNull(eventIndex) ?: return document
+    if (event.restDurationUnits == null || lengthCode !in 1..12) return document
+    return document.copy(events = document.events.toMutableList().also {
+        it[eventIndex] = event.copy(restDurationUnits = durationUnitsForLengthCode(lengthCode, document.divisions))
+    })
+}
+
+fun durationUnitsForLengthCode(code: Int, divisions: Int): Int = when (code) {
+    1 -> divisions * 4
+    2 -> divisions * 6
+    3 -> divisions * 2
+    4 -> divisions * 3
+    5 -> divisions
+    6 -> divisions * 3 / 2
+    7 -> divisions / 2
+    8 -> divisions * 3 / 4
+    9 -> divisions / 4
+    10 -> divisions * 3 / 8
+    11 -> divisions / 8
+    12 -> divisions * 3 / 16
+    else -> divisions
+}.coerceAtLeast(1)
 
 fun removeMeasureBar(document: TabDocument, eventIndex: Int): TabDocument {
     val event = document.events.getOrNull(eventIndex) ?: return document

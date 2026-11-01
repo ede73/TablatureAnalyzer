@@ -75,7 +75,7 @@ object MusicXmlCodec {
                         .append(currentTempo).append("\"/></direction>\n")
                 }
 
-                val noteStrings = event.frets.indices.filter { event.frets[it] != null }
+                val noteStrings = if (event.restDurationUnits != null) emptyList() else event.frets.indices.filter { event.frets[it] != null }
                 if (noteStrings.isEmpty()) {
                     val restDuration = event.restDurationUnits ?: event.durationUnits.filterNotNull().maxOrNull() ?: DEFAULT_DURATION
                     appendRest(sb, restDuration.coerceAtLeast(1), divisions)

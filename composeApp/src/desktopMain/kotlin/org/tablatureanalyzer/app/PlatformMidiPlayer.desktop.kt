@@ -149,11 +149,12 @@ private enum class PlaybackState { STOPPED, PLAYING, PAUSED }
 private enum class PlaybackKind { FULL_TAB, PREVIEW, SELECTION_LOOP }
 
 private fun selectedNoteContextRange(document: TabDocument, selectedEvent: Int): IntRange? {
-    val noteEvents = document.events.indices.filter { document.events[it].frets.any { fret -> fret != null } }
-    val selectedPosition = noteEvents.indexOf(selectedEvent)
-    if (selectedPosition < 0) return null
-    val start = noteEvents[(selectedPosition - 4).coerceAtLeast(0)]
-    val end = noteEvents[(selectedPosition + 4).coerceAtMost(noteEvents.lastIndex)]
+    val noteEvents = document.events.indices.filter { document.events[it].restDurationUnits == null && document.events[it].frets.any { fret -> fret != null } }
+    if (noteEvents.isEmpty()) return null
+    val selectedPosition = noteEvents.indexOfFirst { it >= selectedEvent }
+        .let { if (it < 0) noteEvents.lastIndex else it }
+    val start = minOf(selectedEvent, noteEvents[(selectedPosition - 4).coerceAtLeast(0)])
+    val end = maxOf(selectedEvent, noteEvents[(selectedPosition + 4).coerceAtMost(noteEvents.lastIndex)])
     return start..end
 }
 
@@ -189,7 +190,7 @@ private object DesktopMidiPlayback {
             addMarker(track, "TAB_EVENT:$eventIndex", tick)
             tempoByEvent[eventIndex].orEmpty().forEach { addTempo(track, it.beatsPerMinute, tick) }
             signatureByEvent[eventIndex].orEmpty().forEach { addTimeSignature(track, it.beats, it.beatType, tick) }
-            val soundedDurations = event.frets.indices.mapNotNull { string ->
+            val soundedDurations = if (event.restDurationUnits != null) emptyList() else event.frets.indices.mapNotNull { string ->
                 val fret = event.frets[string] ?: return@mapNotNull null
                 val midiPitch = document.tuning.getOrNull(string)?.plus(fret)?.coerceIn(0, 127) ?: return@mapNotNull null
                 val units = event.durationUnits.getOrNull(string)

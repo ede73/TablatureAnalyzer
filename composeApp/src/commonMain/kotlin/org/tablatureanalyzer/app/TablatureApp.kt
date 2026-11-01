@@ -188,6 +188,16 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                         ?: positions.minOfOrNull { it.eventIndex }
                         ?: -1
                     durationPreviewRequestId += 1
+                }, onConvertToRest = { eventIndices ->
+                    document = convertEventsToRests(document, eventIndices)
+                    selectedEvent = -1
+                    selectedString = -1
+                }, onRemoveRest = { eventIndex ->
+                    document = removeRestAt(document, eventIndex)
+                }, onSetRestLength = { eventIndex, code ->
+                    document = setRestLengthAt(document, eventIndex, code)
+                    durationEditedEventIndex = eventIndex
+                    durationPreviewRequestId += 1
                 }, onRemoveBar = { eventIndex ->
                     document = removeMeasureMarker(document, eventIndex)
                 }, onAddBar = { eventIndex ->
@@ -277,7 +287,7 @@ private fun NamingSelector(
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
+private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
     val textMeasurer = rememberTextMeasurer()
     var dragTargetString by remember { mutableIntStateOf(-1) }
     var dragTargetFret by remember { mutableIntStateOf(-1) }
@@ -288,9 +298,15 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
     var showTransposeControls by remember { mutableStateOf(false) }
     var groupTransformMessage by remember { mutableStateOf("") }
     var selectedNotes by remember { mutableStateOf(emptySet<NotePosition>()) }
+    var selectedRestEvent by remember { mutableIntStateOf(-1) }
+    LaunchedEffect(selectedRestEvent, document.events) {
+        if (selectedRestEvent >= 0 && document.events.getOrNull(selectedRestEvent)?.restDurationUnits == null) {
+            selectedRestEvent = -1
+        }
+    }
     LaunchedEffect(selectedNotes, document.events) {
         val eventIndices = selectedNotes.filter { position ->
-            document.events.getOrNull(position.eventIndex)?.frets?.getOrNull(position.stringIndex) != null
+            document.events.getOrNull(position.eventIndex)?.let { it.restDurationUnits == null && it.frets.getOrNull(position.stringIndex) != null } == true
         }.map { it.eventIndex }
         // A normal single-note click sets the playback start; looping that one
         // note is surprising. Treat only an explicit multi-note selection as a loop.
@@ -300,7 +316,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
     }
     LaunchedEffect(selectedNotes, document) {
         val frets = selectedNotes.mapNotNull { position ->
-            document.events.getOrNull(position.eventIndex)?.frets?.getOrNull(position.stringIndex)
+            document.events.getOrNull(position.eventIndex)?.takeIf { it.restDurationUnits == null }?.frets?.getOrNull(position.stringIndex)
         }
         if (frets.isNotEmpty()) {
             minimumFret = frets.minOrNull().toString()
@@ -437,7 +453,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                     true
                                 } else false
                             }
-                            .pointerInput(document, columnsPerSystem, addNoteMode, markerPlacement, selectedLengthCode) {
+                            .pointerInput(document, columnsPerSystem, addNoteMode, markerPlacement, selectedLengthCode, selectedRestEvent) {
                                 awaitEachGesture {
                                     var downEvent = awaitPointerEvent()
                                     while (downEvent.changes.none { it.pressed }) downEvent = awaitPointerEvent()
@@ -490,11 +506,34 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                             MarkerPlacement.REPEAT_END -> onAddRepeatEnd(startEvent)
                                         }
                                         selectedBarEvent = startEvent
+                                        selectedRestEvent = -1
                                         selectedNotes = emptySet()
                                         onSelect(-1, -1)
                                         markerPlacement = null
                                         return@awaitEachGesture
                                     }
+                                    val clickedRestEvent = document.events.indices.firstOrNull { eventIndex ->
+                                        val event = document.events[eventIndex]
+                                        if (event.restDurationUnits == null) return@firstOrNull false
+                                        val eventSystem = eventIndex / columnsPerSystem
+                                        val local = eventIndex % columnsPerSystem
+                                        val x = leftPx + colGapPx * (local + 1)
+                                        val y = eventSystem * systemHeight.toPx() + 26.dp.toPx() + 32.dp.toPx() * ((document.tuning.size - 1) / 2f)
+                                        kotlin.math.abs(down.position.x - x) <= 18.dp.toPx() && kotlin.math.abs(down.position.y - y) <= 24.dp.toPx()
+                                    }
+                                    if (clickedRestEvent != null) {
+                                        selectedRestEvent = if (selectedRestEvent == clickedRestEvent) -1 else clickedRestEvent
+                                        if (selectedRestEvent >= 0) {
+                                            selectedLengthCode = document.events[selectedRestEvent].restDurationUnits
+                                                ?.let { lengthCodeForUnits(it, document.divisions) } ?: 5
+                                        }
+                                        selectedNotes = emptySet()
+                                        selectedBarEvent = -1
+                                        onSelect(-1, -1)
+                                        down.consume()
+                                        return@awaitEachGesture
+                                    }
+                                    selectedRestEvent = -1
                                     val clickedRepeatStart = document.events.indices.firstOrNull { eventIndex ->
                                         val event = document.events[eventIndex]
                                         if (!event.repeatStartBefore) false else {
@@ -539,7 +578,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         }
                                         return@awaitEachGesture
                                     }
-                                    val hasNote = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString) != null
+                                    val hasNote = document.events.getOrNull(startEvent)?.let { it.restDurationUnits == null && it.frets.getOrNull(startString) != null } == true
                                     heldNote = NotePosition(startEvent, startString).takeIf { hasNote }
                                     var draggingNote = false
                                     var selectingRectangle = false
@@ -578,7 +617,8 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                     if (pastSlop == null) {
                                         if (addNoteMode && !hasNote) {
                                             onAdd(startEvent, startString, 0, selectedLengthCode)
-                                            selectedNotes = emptySet()
+                                            selectedNotes = setOf(NotePosition(startEvent, startString))
+                                            selectedRestEvent = -1
                                             selectedBarEvent = -1
                                         } else if (hasNote && !draggingNote) {
                                             selectedBarEvent = -1
@@ -635,6 +675,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         val rect = selectionRect
                                         if (rect != null) {
                                             val added = document.events.flatMapIndexed { eventIndex, event ->
+                                                if (event.restDurationUnits != null) return@flatMapIndexed emptyList()
                                                 val eventSystem = eventIndex / columnsPerSystem
                                                 val local = eventIndex % columnsPerSystem
                                                 val x = leftPx + colGapPx * (local + 1)
@@ -710,7 +751,24 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         drawText(textMeasurer, "×${event.repeatCount}", Offset(repeatX - 16.dp.toPx(), top + 2.dp.toPx()), style = TextStyle(color = barColor, fontSize = 9.sp, fontWeight = FontWeight.Bold))
                                     }
                                 }
-                                event.frets.forEachIndexed { s, fret ->
+                                if (event.restDurationUnits != null) {
+                                    val restCenter = Offset(x, top + 26.dp.toPx() + rowGap * ((document.tuning.size - 1) / 2f))
+                                    val restColor = if (selectedRestEvent == i || playingEventIndex == i) highlight else green
+                                    if (selectedRestEvent == i) {
+                                        drawRoundRect(
+                                            selection.copy(alpha = 0.55f),
+                                            Offset(restCenter.x - 17.dp.toPx(), restCenter.y - 21.dp.toPx()),
+                                            androidx.compose.ui.geometry.Size(34.dp.toPx(), 42.dp.toPx()),
+                                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(7.dp.toPx())
+                                        )
+                                    }
+                                    val restCode = lengthCodeForUnits(event.restDurationUnits, document.divisions) ?: 5
+                                    drawRestGlyph(restCode, restCenter, restColor, 1.7f)
+                                    if (playingEventIndex == i) {
+                                        drawCircle(highlight, radius = 4.dp.toPx(), center = Offset(restCenter.x - 18.dp.toPx(), restCenter.y))
+                                    }
+                                }
+                                if (event.restDurationUnits == null) event.frets.forEachIndexed { s, fret ->
                                     if (fret != null) {
                                         val y = top + 26.dp.toPx() + rowGap * s
                                         val selected = NotePosition(i, s) in selectedNotes
@@ -823,6 +881,38 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                         document.events.getOrNull(selectedBarEvent)?.takeIf { it.repeatEndAfter }?.let { repeatEvent ->
                             RepeatCountDragControl(repeatEvent.repeatCount) { delta -> onAdjustRepeatCount(selectedBarEvent, delta) }
                         }
+                        if (selectedNotes.isNotEmpty() || selectedRestEvent >= 0) {
+                            RadioOption("Rest", selectedRestEvent >= 0) {
+                                if (selectedRestEvent >= 0) {
+                                    val restoredEventIndex = selectedRestEvent
+                                    val restored = document.events.getOrNull(restoredEventIndex)?.frets
+                                        ?.mapIndexedNotNull { string, fret -> if (fret != null) NotePosition(restoredEventIndex, string) else null }
+                                        .orEmpty()
+                                    onRemoveRest(restoredEventIndex)
+                                    selectedNotes = restored.toSet()
+                                    restored.firstOrNull()?.let { onSelect(it.eventIndex, it.stringIndex) }
+                                    selectedRestEvent = -1
+                                } else {
+                                    val eventIndices = selectedNotes.map { it.eventIndex }.toSet()
+                                    val firstEvent = eventIndices.minOrNull()
+                                    if (firstEvent != null) {
+                                        val event = document.events[firstEvent]
+                                        val units = event.frets.indices.mapNotNull { string ->
+                                            if (event.frets[string] == null) null
+                                            else event.durationUnits.getOrNull(string)
+                                                ?: event.lengthCodes.getOrNull(string)?.let { durationUnitsForLengthCode(it, document.divisions) }
+                                                ?: document.divisions
+                                        }.maxOrNull() ?: document.divisions
+                                        selectedLengthCode = lengthCodeForUnits(units, document.divisions) ?: 5
+                                        onConvertToRest(eventIndices)
+                                        selectedNotes = emptySet()
+                                        selectedBarEvent = -1
+                                        selectedRestEvent = firstEvent
+                                        onSelect(-1, -1)
+                                    }
+                                }
+                            }
+                        }
                         Box {
                             OutlinedButton(
                                 onClick = { showLengthMenu = true },
@@ -859,7 +949,8 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         val targets = durationMenuTargets.ifEmpty { selectedNotes.ifEmpty {
                                             if (movable) setOf(NotePosition(selectedEvent, selectedString)) else emptySet()
                                         } }
-                                        if (targets.isNotEmpty()) onSetLength(targets, code)
+                                        if (selectedRestEvent >= 0) onSetRestLength(selectedRestEvent, code)
+                                        else if (targets.isNotEmpty()) onSetLength(targets, code)
                                         durationMenuTargets = emptySet()
                                         showLengthMenu = false
                                     })
@@ -879,10 +970,11 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                             OutlinedButton(onClick = { selectedNotes = onMoveDirection(selectedNotes, -1) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) { Text("↑ Move") }
                         }
                     }
-                    if (selectedNotes.isNotEmpty() || selectedBarEvent >= 0) {
+                    if (selectedNotes.isNotEmpty() || selectedRestEvent >= 0 || selectedBarEvent >= 0) {
                         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             val selectedMarker = document.events.getOrNull(selectedBarEvent)
                             val selectionLabel = when {
+                                selectedRestEvent >= 0 -> "Rest selected"
                                 selectedBarEvent < 0 -> "${selectedNotes.size} selected"
                                 selectedMarker?.repeatStartBefore == true && selectedMarker.repeatEndAfter -> "Repeat markers selected"
                                 selectedMarker?.repeatStartBefore == true -> "Repeat start selected"
@@ -892,6 +984,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                             Text(selectionLabel, fontSize = 12.sp, color = muted)
                             TextButton(onClick = {
                                 selectedNotes = emptySet()
+                                selectedRestEvent = -1
                                 selectedBarEvent = -1
                                 onSelect(-1, -1)
                             }) { Text("Clear selection") }
@@ -1127,6 +1220,40 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawDurationGlyph(c
     }
     if (code in 2..12 && code % 2 == 0) {
         drawCircle(color, radius = 1.2f * unit, center = Offset(head.right + 3f * unit, headCenter.y))
+    }
+}
+
+/** Draw a staff-style rest mark centered at the event's single time position. */
+private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRestGlyph(code: Int, center: Offset, color: Color, unit: Float) {
+    if (code in 1..4) {
+        val y = center.y + if (code <= 2) 1f else -4f * unit
+        drawRect(color, Offset(center.x - 4f * unit, y), androidx.compose.ui.geometry.Size(8f * unit, 3f * unit))
+        if (code == 2 || code == 4) drawCircle(color, radius = 1.5f * unit, center = Offset(center.x + 7f * unit, center.y - 1f * unit))
+        return
+    }
+    val spine = Path().apply {
+        moveTo(center.x + 2f * unit, center.y - 9f * unit)
+        cubicTo(center.x - 5f * unit, center.y - 8f * unit, center.x + 4f * unit, center.y - 4f * unit, center.x - 1f * unit, center.y - 1f * unit)
+        cubicTo(center.x - 5f * unit, center.y + 2f * unit, center.x + 4f * unit, center.y + 5f * unit, center.x - 2f * unit, center.y + 9f * unit)
+        lineTo(center.x - 4f * unit, center.y + 12f * unit)
+    }
+    drawPath(spine, color, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2f * unit, cap = androidx.compose.ui.graphics.StrokeCap.Round, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+    val flags = when (code) {
+        7, 8 -> 1
+        9, 10 -> 2
+        11, 12 -> 3
+        else -> 0
+    }
+    repeat(flags) { index ->
+        val y = center.y - 6f * unit + index * 4.5f * unit
+        val flag = Path().apply {
+            moveTo(center.x + 1f * unit, y)
+            cubicTo(center.x + 7f * unit, y + 1f * unit, center.x + 5f * unit, y + 5f * unit, center.x + 2f * unit, y + 6f * unit)
+        }
+        drawPath(flag, color, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.8f * unit, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+    }
+    if (code in 2..12 && code % 2 == 0) {
+        drawCircle(color, radius = 1.5f * unit, center = Offset(center.x + 7f * unit, center.y - 1f * unit))
     }
 }
 
