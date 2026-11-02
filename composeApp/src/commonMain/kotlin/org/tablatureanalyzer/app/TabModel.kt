@@ -837,7 +837,10 @@ fun rankAudioChords(midiNotes: List<Int>, preferredRoot: Int? = null): List<Audi
         }
         // Prefer a chord whose root is repeated and heard in a lower register. This resolves
         // common relative-minor/major ties such as A-C-E (Am vs C) while retaining alternatives.
-        val complexityPenalty = (chord.pitchClasses.size - 3).coerceAtLeast(0) * 8.0
+        // An omitted fifth must not make an extended chord look as simple as a
+        // complete triad (for example C6(drop5) and Am contain the same notes).
+        val complexityPenalty = (chord.pitchClasses.size - 3).coerceAtLeast(0) * 8.0 +
+            if ("drop" in chord.quality.suffix) 8.0 else 0.0
         val bassRootEvidence = if (chord.root == bassPitchClass) 5.0 else 0.0
         val continuityBonus = if (chord.root == preferredRoot) 10.0 else 0.0
         val score = 30.0 - complexityPenalty - extras * 6.0 + rootCount * 1.2 + rootRegisterEvidence + bassRootEvidence + continuityBonus

@@ -127,6 +127,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
         if (tempoInput.toIntOrNull() != storedTempo) tempoInput = storedTempo.toString()
     }
     var page by remember { mutableIntStateOf(0) }
+    PlatformAudioTestControl { page = it }
     var defaultNaming by remember {
         mutableStateOf(ChordNamingSystem.values().firstOrNull { it.name == PlatformPreferences.get("defaultNaming") } ?: ChordNamingSystem.US)
     }

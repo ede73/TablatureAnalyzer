@@ -6,6 +6,12 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 class ChordAnalysisTest {
+    @Test
+    fun completeMinorTriadOutranksEquivalentOmittedFifthExtension() {
+        assertEquals("Am", identifyAudioChord(listOf(48, 52, 57, 60))?.name)
+        assertEquals("Am", identifyAudioChord(listOf(52, 57, 60))?.name)
+    }
+
     private val standardTuning = listOf(64, 59, 55, 50, 45, 40)
 
     @Test
