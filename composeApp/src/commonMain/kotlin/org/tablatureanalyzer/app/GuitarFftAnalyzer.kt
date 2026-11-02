@@ -22,7 +22,26 @@ object GuitarFftAnalyzer {
 
         val lowestNote = minMidi.coerceIn(35, 88)
         val highestNote = maxMidi.coerceIn(lowestNote, 88)
+        // Harmonics alone cannot establish a fundamental. Also assign each measured
+        // peak to one note: adjacent semitones must not borrow the same FFT bin.
+        val fundamentals = FloatArray(89)
+        for (bin in 2 until magnitude.lastIndex) {
+            val center = magnitude[bin]
+            if (center < peak * 0.045f || center <= magnitude[bin - 1] || center < magnitude[bin + 1]) continue
+            val left = ln(magnitude[bin - 1].coerceAtLeast(1e-12f).toDouble())
+            val middle = ln(center.coerceAtLeast(1e-12f).toDouble())
+            val right = ln(magnitude[bin + 1].coerceAtLeast(1e-12f).toDouble())
+            val curvature = left - 2.0 * middle + right
+            val offset = if (curvature < -1e-12) (0.5 * (left - right) / curvature).coerceIn(-0.5, 0.5) else 0.0
+            val frequency = (bin + offset) * sampleRate / size
+            val note = 69.0 + 12.0 * ln(frequency / 440.0) / ln(2.0)
+            val midi = note.roundToInt()
+            if (midi in lowestNote..highestNote && kotlin.math.abs(note - midi) <= 0.4) {
+                fundamentals[midi] = maxOf(fundamentals[midi], center)
+            }
+        }
         val scores = (lowestNote..highestNote).associateWith { midi ->
+            if (fundamentals[midi] == 0f) return@associateWith 0.0
             val frequency = 440.0 * 2.0.pow((midi - 69) / 12.0)
             var score = 0.0
             for (harmonic in 1..6) {
@@ -33,8 +52,7 @@ object GuitarFftAnalyzer {
             }
             // A real fundamental matters; this prevents an overtone from routinely
             // being mistaken for a separate low note.
-            val fundamentalBin = (frequency * size / sampleRate).roundToInt().coerceIn(1, magnitude.lastIndex)
-            score * (0.55 + 0.45 * magnitude[fundamentalBin] / peak)
+            score * (0.55 + 0.45 * fundamentals[midi] / peak)
         }
         val best = scores.values.maxOrNull() ?: return emptyList()
         if (best <= peak * 0.035) return emptyList()
@@ -58,21 +76,38 @@ object GuitarFftAnalyzer {
 
     /** Estimates one played note for tab recording, where overtones must not become extra frets. */
     fun detectMidiNote(samples: FloatArray, sampleRate: Int): Int? {
+        val recentSize = (sampleRate * 4096L / 44_100).toInt().coerceAtLeast(2048)
+        return estimateMidiNote(samples, sampleRate, recentSize)
+            ?: if (samples.size > recentSize) estimateMidiNote(samples, sampleRate, samples.size) else null
+    }
+
+    private fun estimateMidiNote(samples: FloatArray, sampleRate: Int, maxSamples: Int): Int? {
         if (samples.size < 2048 || sampleRate <= 0) return null
 
         // YIN's difference function is inexpensive after 4:1 decimation and is robust to
         // guitar harmonics that the chord-oriented spectral peak detector reports separately.
-        val decimation = 4
-        val reduced = FloatArray(samples.size / decimation) { index ->
-            val start = index * decimation
-            (samples[start] + samples[start + 1] + samples[start + 2] + samples[start + 3]) * 0.25f
+        val decimation = when {
+            sampleRate >= 32_000 -> 4
+            sampleRate >= 16_000 -> 2
+            else -> 1
+        }
+        // Follow the current note rather than blending several notes from the
+        // chord detector's much longer window. 4096 samples still span >7 low-E
+        // periods at 44.1 kHz. Scale with sample rate to keep the duration stable.
+        val analysisSize = minOf(samples.size, maxSamples)
+        val analysisStart = samples.size - analysisSize
+        val reduced = FloatArray(analysisSize / decimation) { index ->
+            val start = analysisStart + index * decimation
+            var sum = 0f
+            for (offset in 0 until decimation) sum += samples[start + offset]
+            sum / decimation
         }
         val reducedRate = sampleRate / decimation
         val mean = reduced.average().toFloat()
         for (index in reduced.indices) reduced[index] -= mean
 
         val minFrequency = 55.0
-        val maxFrequency = 1_200.0
+        val maxFrequency = 1_400.0
         val minLag = (reducedRate / maxFrequency).toInt().coerceAtLeast(2)
         val maxLag = (reducedRate / minFrequency).toInt().coerceAtMost(reduced.size / 2)
         if (maxLag <= minLag) return null
@@ -109,7 +144,34 @@ object GuitarFftAnalyzer {
             if (normalized[selectedLag] > 0.32) return null
         }
 
-        val frequency = reducedRate.toDouble() / selectedLag
+        // A strong second harmonic can produce the first acceptable dip an octave
+        // too high. Prefer a substantially better full-period match when present.
+        val doubleLag = selectedLag * 2
+        if (normalized[selectedLag] > 0.02 && doubleLag + 1 <= maxLag) {
+            val betterLag = (doubleLag - 1..doubleLag + 1).minByOrNull { normalized[it] }!!
+            // Compare interpolated minima: integer lag rounding is proportionally
+            // much worse for high notes and must not cause an octave-down jump.
+            fun minimumAt(lag: Int): Double {
+                if (lag <= 1 || lag >= maxLag) return normalized[lag]
+                val left = normalized[lag - 1]
+                val center = normalized[lag]
+                val right = normalized[lag + 1]
+                val curvature = left - 2 * center + right
+                return if (curvature > 1e-12) (center - (left - right) * (left - right) / (8 * curvature)).coerceAtLeast(0.0) else center
+            }
+            val singleMinimum = minimumAt(selectedLag)
+            val doubleMinimum = minimumAt(betterLag)
+            if (doubleMinimum < singleMinimum * 0.8 && singleMinimum - doubleMinimum > 0.02) selectedLag = betterLag
+        }
+
+        val offset = if (selectedLag > 1 && selectedLag < maxLag) {
+            val left = normalized[selectedLag - 1]
+            val center = normalized[selectedLag]
+            val right = normalized[selectedLag + 1]
+            val curvature = left - 2.0 * center + right
+            if (curvature > 1e-12) (0.5 * (left - right) / curvature).coerceIn(-0.5, 0.5) else 0.0
+        } else 0.0
+        val frequency = reducedRate.toDouble() / (selectedLag + offset)
         val midi = (69.0 + 12.0 * ln(frequency / 440.0) / ln(2.0)).roundToInt()
         return midi.takeIf { it in 35..88 }
     }
@@ -136,7 +198,8 @@ object GuitarFftAnalyzer {
     private fun magnitudeSpectrum(samples: FloatArray): FloatArray? {
         val size = samples.size
         if (size < 2048 || size and (size - 1) != 0) return null
-        val real = samples.copyOf()
+        val mean = samples.average().toFloat()
+        val real = FloatArray(size) { samples[it] - mean }
         val imaginary = FloatArray(size)
         for (i in real.indices) {
             val window = (0.5 - 0.5 * cos(2.0 * PI * i / (size - 1))).toFloat()

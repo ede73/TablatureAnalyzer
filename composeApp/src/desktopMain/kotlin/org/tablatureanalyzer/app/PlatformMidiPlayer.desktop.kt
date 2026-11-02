@@ -161,11 +161,12 @@ private fun selectedNoteContextRange(document: TabDocument, selectedEvent: Int):
 private object DesktopMidiPlayback {
     private const val PPQ = 480
     private var sequencer: javax.sound.midi.Sequencer? = null
+    private var output: DesktopMidiOutput? = null
 
     @Synchronized
     fun play(document: TabDocument, speedPercent: Int, onEvent: (Int?) -> Unit, eventRange: IntRange? = null, loopCount: Int = 0) {
         stop()
-        val nextSequencer = MidiSystem.getSequencer() ?: error("No MIDI sequencer is available.")
+        val nextSequencer = MidiSystem.getSequencer(false) ?: error("No MIDI sequencer is available.")
         val sequence = Sequence(Sequence.PPQ, PPQ)
         val track = sequence.createTrack()
         addShort(track, ShortMessage.PROGRAM_CHANGE, 0, 24, 0, 0L) // Nylon-string guitar
@@ -224,6 +225,8 @@ private object DesktopMidiPlayback {
                         if (sequencer === nextSequencer) {
                             nextSequencer.stop()
                             nextSequencer.close()
+                            output?.close()
+                            output = null
                             sequencer = null
                             true
                         } else {
@@ -234,7 +237,16 @@ private object DesktopMidiPlayback {
                 }
             }
         }
-        nextSequencer.open()
+        try {
+            nextSequencer.open()
+            output = DesktopMidiOutput.open()
+            nextSequencer.transmitter.receiver = output!!.receiver
+        } catch (failure: Exception) {
+            nextSequencer.close()
+            output?.close()
+            output = null
+            throw failure
+        }
         nextSequencer.tempoFactor = speedPercent.coerceIn(25, 200) / 100f
         if (loopCount != 0) {
             nextSequencer.loopStartPoint = 0L
@@ -268,6 +280,8 @@ private object DesktopMidiPlayback {
             runCatching { it.close() }
         }
         sequencer = null
+        output?.let { runCatching { it.close() } }
+        output = null
     }
 
     private fun addShort(track: Track, command: Int, channel: Int, data1: Int, data2: Int, tick: Long) {
