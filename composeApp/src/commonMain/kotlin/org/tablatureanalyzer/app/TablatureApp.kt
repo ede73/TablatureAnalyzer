@@ -229,7 +229,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
             }
             if (page == 0) {
                 Spacer(Modifier.height(4.dp))
-                GuitarInputPanel(GuitarInputMode.TAB_RECORD, document.tuning, tabNaming) { pitches ->
+                GuitarInputPanel(GuitarInputMode.TAB_RECORD, document.tuning, tabNaming) { pitches, _ ->
                     val event = tabEventForPitches(document.tuning, pitches) ?: return@GuitarInputPanel
                     val eventIndex = document.events.size
                     updateDocument(document.copy(events = document.events + event))
@@ -1364,6 +1364,7 @@ private fun androidx.compose.ui.graphics.drawscope.DrawScope.drawRestGlyph(code:
 @Composable
 private fun ChordPage(tuning: List<Int>, database: ChordDatabase, databaseLoaded: Boolean, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit) {
     var selectedFrets by remember(tuning) { mutableStateOf(List<Int?>(tuning.size) { null }) }
+    var micPitchGuesses by remember(tuning) { mutableStateOf(emptyList<Int>()) }
     val selectedPitchClasses = remember(tuning, selectedFrets) {
         selectedFrets.mapIndexedNotNull { string, fret -> fret?.let { ((tuning[string] + it) % 12 + 12) % 12 } }.toSet()
     }
@@ -1380,11 +1381,11 @@ private fun ChordPage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
         chordQuery = identifyChord(notes)?.name(naming).orEmpty()
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        GuitarInputPanel(GuitarInputMode.CHORD_GUESS, tuning, naming) { pitches ->
-            val pitchClasses = pitches.map { ((it % 12) + 12) % 12 }.toSet()
-            identifyChord(pitchClasses)?.let { chordQuery = it.name(naming) }
+        GuitarInputPanel(GuitarInputMode.CHORD_GUESS, tuning, naming) { pitches, rankedGuess ->
+            micPitchGuesses = pitches
+            rankedGuess?.let { chordQuery = it.name(naming) }
         }
-        ChordBuilderCard(tuning, selectedFrets, selectedPitchClasses, detectedChord, chordQuery, { chordQuery = it }, naming, namingOverride, onNamingOverride,
+        ChordBuilderCard(tuning, selectedFrets, selectedPitchClasses, detectedChord, chordQuery, { chordQuery = it }, naming, namingOverride, onNamingOverride, micPitchGuesses,
             onFretsChanged = changeBuilderFrets,
             possibilities = detectedPossibilities,
             onChoosePossibility = { chordQuery = it.name(naming) },
@@ -1435,6 +1436,7 @@ private fun ChordBuilderCard(
     naming: ChordNamingSystem,
     namingOverride: ChordNamingSystem?,
     onNamingOverride: (ChordNamingSystem?) -> Unit,
+    micPitchGuesses: List<Int>,
     onFretsChanged: (List<Int?>) -> Unit,
     possibilities: List<ChordSymbol>,
     onChoosePossibility: (ChordSymbol) -> Unit,
@@ -1466,6 +1468,12 @@ private fun ChordBuilderCard(
             if (showInstructions) {
                 Text("Tap a fret for each string. Fret 0 is open; tap × to mute a string. A matching chord name appears below.", fontSize = 12.sp, color = muted)
             }
+            Text(
+                if (micPitchGuesses.isEmpty()) "Mic pitch guesses · none detected" else
+                    "Mic pitch guesses · orange · ${micPitchGuesses.sorted().joinToString(" · ") { "${noteName(it, naming)} (${it})" }}",
+                fontSize = 11.sp,
+                color = if (micPitchGuesses.isEmpty()) muted else Color(0xFFE6A34C)
+            )
             Spacer(Modifier.height(4.dp))
             Box(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
                 Canvas(Modifier.width(chartLabelWidth + fretCellWidth * 13).height((tuning.size * 48 + 38).dp).pointerInput(tuning, selectedFrets) {
@@ -1497,6 +1505,14 @@ private fun ChordBuilderCard(
                         for (fret in 0..12) {
                             val x = labelWidth + (fret + 1f) * cellWidth
                             drawLine(if (fret == 0) ink else line, Offset(x, y - rowGap * 0.42f), Offset(x, y + rowGap * 0.42f), if (fret == 0) 2.4f else 1f)
+                        }
+                        micPitchGuesses.forEach { midi ->
+                            val fret = midi - tuning[string]
+                            if (fret in 0..12) {
+                                val x = labelWidth + (fret + 0.5f) * cellWidth
+                                drawCircle(Color(0xFFE6A34C), 11.dp.toPx(), Offset(x, y))
+                                drawText(textMeasurer, noteName(midi, naming), Offset(x - 8.dp.toPx(), y - 6.dp.toPx()), style = TextStyle(color = paper, fontSize = 8.sp, fontWeight = FontWeight.Bold))
+                            }
                         }
                         selectedFrets[string]?.let { fret ->
                             val x = labelWidth + (fret + 0.5f) * cellWidth

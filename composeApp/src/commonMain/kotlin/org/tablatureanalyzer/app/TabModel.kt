@@ -809,6 +809,76 @@ fun identifyChord(notes: Set<Int>): ChordSymbol? {
         .firstOrNull { it.pitchClasses == normalized }
 }
 
+data class AudioChordGuess(val chord: ChordSymbol, val score: Double, val support: Int)
+
+/** Ranks possible names for one FFT frame; scores express relative evidence, not probabilities. */
+fun rankAudioChords(midiNotes: List<Int>, preferredRoot: Int? = null): List<AudioChordGuess> {
+    if (midiNotes.isEmpty()) return emptyList()
+    val pitchClasses = midiNotes.map { ((it % 12) + 12) % 12 }.toSet()
+    val candidates = (0..11).asSequence()
+        .flatMap { root -> chordQualities.asSequence().map { ChordSymbol(root, it) } }
+        .filter { chord ->
+            chord.pitchClasses.all { it in pitchClasses } && (pitchClasses - chord.pitchClasses).size <= 1
+        }
+        .toList()
+    if (candidates.isEmpty()) return emptyList()
+
+    fun lowestOccurrence(root: Int) = midiNotes.filter { ((it % 12) + 12) % 12 == root }.minOrNull() ?: Int.MAX_VALUE
+    fun occurrenceCount(root: Int) = midiNotes.count { ((it % 12) + 12) % 12 == root }
+    val lowestMidi = midiNotes.minOrNull() ?: return emptyList()
+    val bassPitchClass = ((lowestMidi % 12) + 12) % 12
+
+    return candidates.map { chord ->
+        val extras = (pitchClasses - chord.pitchClasses).size
+        val rootCount = occurrenceCount(chord.root)
+        val rootMidi = lowestOccurrence(chord.root)
+        val rootRegisterEvidence = if (rootMidi == Int.MAX_VALUE) 0.0 else {
+            2.0 / (1.0 + (rootMidi - lowestMidi).coerceAtLeast(0) / 5.0)
+        }
+        // Prefer a chord whose root is repeated and heard in a lower register. This resolves
+        // common relative-minor/major ties such as A-C-E (Am vs C) while retaining alternatives.
+        val complexityPenalty = (chord.pitchClasses.size - 3).coerceAtLeast(0) * 8.0
+        val bassRootEvidence = if (chord.root == bassPitchClass) 5.0 else 0.0
+        val continuityBonus = if (chord.root == preferredRoot) 10.0 else 0.0
+        val score = 30.0 - complexityPenalty - extras * 6.0 + rootCount * 1.2 + rootRegisterEvidence + bassRootEvidence + continuityBonus
+        AudioChordGuess(chord, score, support = 1)
+    }.sortedWith(
+        compareByDescending<AudioChordGuess> { it.score }
+            .thenBy { it.chord.name }
+    )
+}
+
+/** Aggregates frame rankings over a short rolling window to suppress transient FFT guesses. */
+class AudioChordRanker(private val windowFrames: Int = 16) {
+    private val history = mutableListOf<List<AudioChordGuess>>()
+
+    fun update(midiNotes: List<Int>, preferredRoot: Int? = null): List<AudioChordGuess> {
+        history += rankAudioChords(midiNotes, preferredRoot).take(5)
+        while (history.size > windowFrames.coerceAtLeast(1)) history.removeAt(0)
+        val totals = linkedMapOf<String, Pair<ChordSymbol, Double>>()
+        val supports = mutableMapOf<String, Int>()
+        history.forEachIndexed { index, frame ->
+            val recencyWeight = (index + 1.0) / history.size
+            val topScore = frame.firstOrNull()?.score ?: return@forEachIndexed
+            frame.forEach { guess ->
+                val key = guess.chord.name
+                val contribution = recencyWeight * (1.0 + (guess.score - topScore) / 10.0).coerceAtLeast(0.1)
+                val previous = totals[key]
+                totals[key] = guess.chord to ((previous?.second ?: 0.0) + contribution)
+                supports[key] = (supports[key] ?: 0) + 1
+            }
+        }
+        return totals.values.map { (chord, score) ->
+            AudioChordGuess(chord, score, supports[chord.name] ?: 0)
+        }.sortedWith(compareByDescending<AudioChordGuess> { it.score }.thenBy { it.chord.name })
+    }
+
+    fun clear() = history.clear()
+}
+
+/** Returns the top-ranked audio interpretation for callers that only need one label. */
+fun identifyAudioChord(midiNotes: List<Int>, preferredRoot: Int? = null): ChordSymbol? = rankAudioChords(midiNotes, preferredRoot).firstOrNull()?.chord
+
 /** Returns all exact chord-name interpretations; identifyChord remains the preferred single result. */
 fun identifyChordPossibilities(notes: Set<Int>): List<ChordSymbol> {
     val normalized = notes.map { ((it % 12) + 12) % 12 }.toSet()

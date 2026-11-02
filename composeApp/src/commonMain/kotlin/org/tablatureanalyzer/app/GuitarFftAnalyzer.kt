@@ -8,14 +8,21 @@ import kotlin.math.sin
 
 /** Lightweight FFT-based pitch candidates for guitar fundamentals and their harmonics. */
 object GuitarFftAnalyzer {
-    fun detectMidiNotes(samples: FloatArray, sampleRate: Int): List<Int> {
+    fun detectMidiNotes(
+        samples: FloatArray,
+        sampleRate: Int,
+        minMidi: Int = 35,
+        maxMidi: Int = 88
+    ): List<Int> {
         val magnitude = magnitudeSpectrum(samples) ?: return emptyList()
         if (sampleRate <= 0) return emptyList()
         val size = samples.size
         val peak = magnitude.maxOrNull() ?: return emptyList()
         if (peak <= 0.00001f) return emptyList()
 
-        val scores = (35..88).associateWith { midi ->
+        val lowestNote = minMidi.coerceIn(35, 88)
+        val highestNote = maxMidi.coerceIn(lowestNote, 88)
+        val scores = (lowestNote..highestNote).associateWith { midi ->
             val frequency = 440.0 * 2.0.pow((midi - 69) / 12.0)
             var score = 0.0
             for (harmonic in 1..6) {
@@ -34,7 +41,10 @@ object GuitarFftAnalyzer {
         val ranked = scores.entries.sortedByDescending { it.value }
         val chosen = mutableListOf<Int>()
         for ((midi, score) in ranked) {
-            if (score < best * 0.30 || chosen.size == 6) break
+            if (score < best * 0.12 || chosen.size == 8) break
+            // Neighboring semitones often share FFT bins at low guitar frequencies.
+            // Keep only the stronger estimate in a one-semitone cluster.
+            if (chosen.any { kotlin.math.abs(midi - it) <= 1 }) continue
             val frequency = 440.0 * 2.0.pow((midi - 69) / 12.0)
             // Suppress likely octave/fifth harmonics of an already accepted note.
             val explained = chosen.any { lower ->
@@ -188,5 +198,5 @@ expect fun GuitarInputPanel(
     mode: GuitarInputMode,
     tuning: List<Int>,
     naming: ChordNamingSystem,
-    onDetectedPitches: (List<Int>) -> Unit
+    onDetectedPitches: (List<Int>, ChordSymbol?) -> Unit
 )

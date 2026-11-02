@@ -18,7 +18,7 @@ actual fun GuitarInputPanel(
     mode: GuitarInputMode,
     tuning: List<Int>,
     naming: ChordNamingSystem,
-    onDetectedPitches: (List<Int>) -> Unit
+    onDetectedPitches: (List<Int>, ChordSymbol?) -> Unit
 ) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(12.dp)) {
         Column(Modifier.fillMaxWidth().padding(12.dp)) {
