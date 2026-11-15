@@ -145,6 +145,43 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int
     }
 }
 
+private object DesktopNoteAudition {
+    private val scheduler = java.util.concurrent.Executors.newSingleThreadScheduledExecutor { task ->
+        Thread(task, "tab-note-audition").apply { isDaemon = true }
+    }
+    private var output: DesktopMidiOutput? = null
+    private var pendingOff: java.util.concurrent.ScheduledFuture<*>? = null
+    private var soundingPitch: Int? = null
+
+    @Synchronized
+    fun play(pitch: Int) {
+        if (pitch !in 0..127) return
+        runCatching {
+            val receiver = (output ?: DesktopMidiOutput.open().also { output = it }).receiver
+            pendingOff?.cancel(false)
+            soundingPitch?.let { send(receiver, ShortMessage.NOTE_OFF, it, 0) }
+            send(receiver, ShortMessage.PROGRAM_CHANGE, 24, 0)
+            send(receiver, ShortMessage.NOTE_ON, pitch, 88)
+            soundingPitch = pitch
+            pendingOff = scheduler.schedule({
+                synchronized(this) {
+                    val active = soundingPitch ?: return@synchronized
+                    runCatching { output?.receiver?.let { send(it, ShortMessage.NOTE_OFF, active, 0) } }
+                    soundingPitch = null
+                }
+            }, 450, java.util.concurrent.TimeUnit.MILLISECONDS)
+        }
+    }
+
+    private fun send(receiver: javax.sound.midi.Receiver, command: Int, data1: Int, data2: Int) {
+        val message = ShortMessage()
+        message.setMessage(command, 1, data1, data2)
+        receiver.send(message, -1)
+    }
+}
+
+actual fun PlatformAuditionNote(midiPitch: Int) = DesktopNoteAudition.play(midiPitch)
+
 private enum class PlaybackState { STOPPED, PLAYING, PAUSED }
 private enum class PlaybackKind { FULL_TAB, PREVIEW, SELECTION_LOOP }
 

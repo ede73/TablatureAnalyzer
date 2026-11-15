@@ -14,6 +14,9 @@ expect fun PlatformSaveProjectButton(contents: String)
 @Composable
 expect fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int?, durationPreviewRequestId: Int, playheadEventIndex: Int, selectedPlaybackRange: IntRange?, onPlayingEvent: (Int?) -> Unit)
 
+/** Play a brief preview when a tab note is added or edited. */
+expect fun PlatformAuditionNote(midiPitch: Int)
+
 expect object PlatformPreferences {
     fun get(key: String): String?
     fun put(key: String, value: String)
