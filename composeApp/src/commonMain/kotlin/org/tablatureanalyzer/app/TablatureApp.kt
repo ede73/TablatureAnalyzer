@@ -1,5 +1,7 @@
 package org.tablatureanalyzer.app
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -455,6 +457,22 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
     val staffScrollState = rememberScrollState()
     var staffViewportTopInRoot by remember { mutableFloatStateOf(0f) }
     var staffCanvasTopInRoot by remember { mutableFloatStateOf(0f) }
+    val anticipationGlow = remember { Animatable(0f) }
+    val nextPlaybackEventIndex = remember(document.events, playingEventIndex) {
+        if (playingEventIndex < 0) -1 else
+            ((playingEventIndex + 1)..document.events.lastIndex).firstOrNull { index ->
+                val event = document.events[index]
+                event.restDurationUnits == null && event.frets.any { it != null }
+            } ?: -1
+    }
+    LaunchedEffect(playingEventIndex) {
+        if (playingEventIndex >= 0) {
+            anticipationGlow.snapTo(0.12f)
+            anticipationGlow.animateTo(0.72f, tween(durationMillis = 420))
+        } else {
+            anticipationGlow.snapTo(0f)
+        }
+    }
     val mobileControlsDrawer = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(openControlsRequest) {
@@ -1129,16 +1147,42 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         val action = event.actions.getOrNull(s)
                                         // The notehead circle already delimits the fret; do not add notation parentheses.
                                         val noteLabel = (if (fretPreview) dragTargetFret else fret).toString()
-                                        val radius = 14.dp.toPx()
-                                        val noteFill = when { fretPreview || selected -> selection; dropTarget -> surfaceRaised; chosen -> green; else -> surfaceRaised }
-                                        val noteOutline = when { fretPreview || selected || dropTarget || chosen -> green; else -> line }
-                                        val originAlpha = if (verticalMovePreview) 0.30f else 1f
-                                        drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
-                                        drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (selected || fretPreview) 2.5f else 1.5f))
-                                        if (playingEventIndex == i) {
-                                            drawCircle(highlight, radius = 4.dp.toPx(), center = Offset(x - radius - 5.dp.toPx(), y))
+                                        val isPlaying = playingEventIndex == i
+                                        val isNextToPlay = nextPlaybackEventIndex == i
+                                        val normalRadius = 14.dp.toPx()
+                                        val radius = when {
+                                            isPlaying -> 22.dp.toPx()
+                                            isNextToPlay -> 17.dp.toPx()
+                                            else -> normalRadius
                                         }
-                                        drawText(textMeasurer, noteLabel, Offset(x - if (noteLabel.length > 2) 11.dp.toPx() else 5.dp.toPx(), y - 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = 11.sp, fontWeight = FontWeight.Bold))
+                                        val noteFill = when {
+                                            isPlaying -> highlight
+                                            isNextToPlay -> selection
+                                            fretPreview || selected -> selection
+                                            dropTarget -> surfaceRaised
+                                            chosen -> green
+                                            else -> surfaceRaised
+                                        }
+                                        val noteOutline = when {
+                                            isPlaying || isNextToPlay || fretPreview || selected || dropTarget || chosen -> highlight
+                                            else -> line
+                                        }
+                                        val originAlpha = if (verticalMovePreview) 0.30f else 1f
+                                        if (isPlaying) {
+                                            drawCircle(highlight.copy(alpha = 0.28f), radius = radius + 9.dp.toPx(), center = Offset(x, y))
+                                        } else if (isNextToPlay) {
+                                            drawCircle(highlight.copy(alpha = anticipationGlow.value), radius = radius + 8.dp.toPx(), center = Offset(x, y))
+                                        }
+                                        drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
+                                        drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (isPlaying || selected || fretPreview) 3.dp.toPx() else 1.8.dp.toPx()))
+                                        val labelFontSize = if (isPlaying) 17.sp else if (isNextToPlay) 12.sp else 11.sp
+                                        val labelHalfWidth = when {
+                                            noteLabel.length > 2 && isPlaying -> 14.dp.toPx()
+                                            noteLabel.length > 2 -> 11.dp.toPx()
+                                            isPlaying -> 6.dp.toPx()
+                                            else -> 5.dp.toPx()
+                                        }
+                                        drawText(textMeasurer, noteLabel, Offset(x - labelHalfWidth, y - if (isPlaying) 11.dp.toPx() else 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = labelFontSize, fontWeight = FontWeight.Bold))
                                         if (verticalMovePreview && dragTargetFret in 0..36) {
                                             val previewY = top + 26.dp.toPx() + rowGap * dragTargetString
                                             val targetEmpty = event.frets.getOrNull(dragTargetString) == null
