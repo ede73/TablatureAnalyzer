@@ -67,6 +67,9 @@ private val highlight = Color(0xFF79C7B2)
 private val selection = Color(0xFF294A3F)
 private val error = Color(0xFFF29A90)
 private const val UNDO_HISTORY_LIMIT = 100
+private const val SEMITONES_PER_OCTAVE = 12
+
+private fun pitchClassOf(midiPitch: Int): Int = midiPitch.mod(SEMITONES_PER_OCTAVE)
 
 private enum class MarkerPlacement { BAR, REPEAT_START, REPEAT_END }
 
@@ -275,101 +278,147 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
             if (!phoneLayout) editorHeader()
             Spacer(Modifier.height(6.dp))
             if (page == 0) {
-                EditorPage(document, selectedEvent, selectedString, playingEventIndex, playheadEventIndex, upcomingNoteZoomEnabled, historyResetRequestId, tabNaming, tabNamingOverride, { tabNamingOverride = it }, phoneLayout, openTabControlsRequest, editorHeader, onSelectPart = { partId ->
-                    if (partId != document.activePart.id) {
-                        document = document.selectPart(partId)
-                        selectedEvent = -1
-                        selectedString = -1
-                        selectedPlaybackRange = null
-                        playheadEventIndex = 0
-                        historyResetRequestId += 1
-                    }
-                }, onAddPart = { preset ->
-                    updateDocument(document.addInstrument(preset))
-                    selectedEvent = -1
-                    selectedString = -1
-                    selectedPlaybackRange = null
-                    playheadEventIndex = 0
-                    historyResetRequestId += 1
-                }, onSetPartProgram = { program ->
-                    updateDocument(document.updatePart(document.activePart.id) { it.copy(midiProgram = program) })
-                }, onSetPlaybackStart = { playheadEventIndex = it }, onPlaybackSelectionChanged = { selectedPlaybackRange = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
-                    val updated = moveNote(document, event, from, target)
-                    if (updated != document) {
-                        updateDocument(updated)
-                        selectedEvent = event
-                        selectedString = target
-                        updated.tuning.getOrNull(target)?.plus(updated.events.getOrNull(event)?.frets?.getOrNull(target) ?: 0)
-                            ?.let(::PlatformAuditionNote)
-                    }
-                }, onSetFret = { event, string, fret ->
-                    val updated = setNoteFret(document, event, string, fret)
-                    updateDocument(updated)
-                    updated.tuning.getOrNull(string)?.plus(fret)?.let(::PlatformAuditionNote)
-                }, onMoveDirection = { selection, direction ->
-                    val notesToMove = selection.ifEmpty {
-                        if (selectedEvent >= 0 && selectedString >= 0) setOf(NotePosition(selectedEvent, selectedString)) else emptySet()
-                    }
-                    val result = moveNotesInDirection(document, notesToMove, direction)
-                    if (result.applied) {
-                        updateDocument(result.document)
-                        result.movedSelection.singleOrNull()?.let { moved ->
-                            selectedEvent = moved.eventIndex
-                            selectedString = moved.stringIndex
-                        }
-                    }
-                    if (result.applied) result.movedSelection else selection
-                }, onAdd = { event, string, fret, lengthCode ->
-                    updateDocument(addNoteAt(document, event, string, fret, lengthCode))
-                    selectedEvent = event.coerceIn(0, document.events.lastIndex.coerceAtLeast(0))
-                    selectedString = string
-                    document.tuning.getOrNull(string)?.plus(fret)?.let(::PlatformAuditionNote)
-                }, onSetLength = { positions, code ->
-                    updateDocument(setNoteLengthsAt(document, positions, code))
-                    durationEditedEventIndex = selectedEvent.takeIf { eventIndex -> eventIndex >= 0 && positions.any { it.eventIndex == eventIndex } }
-                        ?: positions.minOfOrNull { it.eventIndex }
-                        ?: -1
-                    durationPreviewRequestId += 1
-                }, onConvertToRest = { eventIndices ->
-                    updateDocument(convertEventsToRests(document, eventIndices))
-                    selectedEvent = -1
-                    selectedString = -1
-                }, onRemoveRest = { eventIndex ->
-                    updateDocument(removeRestAt(document, eventIndex))
-                }, onSetRestLength = { eventIndex, code ->
-                    updateDocument(setRestLengthAt(document, eventIndex, code))
-                    durationEditedEventIndex = eventIndex
-                    durationPreviewRequestId += 1
-                }, onRemoveBar = { eventIndex ->
-                    updateDocument(removeMeasureMarker(document, eventIndex))
-                }, onAddBar = { eventIndex ->
-                    updateDocument(addMeasureBar(document, eventIndex))
-                }, onAddRepeatStart = { eventIndex ->
-                    updateDocument(addRepeatStart(document, eventIndex))
-                }, onAddRepeatEnd = { eventIndex ->
-                    updateDocument(addRepeatEnd(document, eventIndex))
-                }, onAdjustRepeatCount = { eventIndex, delta ->
-                    updateDocument(adjustRepeatCount(document, eventIndex, delta), "repeat-count-$eventIndex")
-                }, onMoveBar = { fromEvent, toEvent ->
-                    val moved = moveMeasureBar(document, fromEvent, toEvent)
-                    val didMove = moved != document
-                    updateDocument(moved)
-                    didMove
-                }, onDelete = {
-                    updateDocument(deleteNoteAt(document, selectedEvent, selectedString))
-                    selectedEvent = selectedEvent.coerceAtMost(document.events.lastIndex)
-                    selectedString = -1
-                }, onGroupTransform = { request ->
-                    val result = applyGroupFretOperation(document, request)
-                    if (result.applied) {
-                        val coalesceKey = request.operation.takeIf { it != GroupFretOperation.TRANSPOSE }
-                            ?.let { "fret-range-$it" }
-                        updateDocument(result.document, coalesceKey)
-                        selectedEvent = -1
-                        selectedString = -1
-                    }
-                    result
-                })
+                EditorPage(
+                    document = document,
+                    selectedEvent = selectedEvent,
+                    selectedString = selectedString,
+                    playingEventIndex = playingEventIndex,
+                    playheadEventIndex = playheadEventIndex,
+                    upcomingNoteZoomEnabled = upcomingNoteZoomEnabled,
+                    historyResetRequestId = historyResetRequestId,
+                    naming = tabNaming,
+                    namingOverride = tabNamingOverride,
+                    onNamingOverride = { tabNamingOverride = it },
+                    phoneLayout = phoneLayout,
+                    openControlsRequest = openTabControlsRequest,
+                    globalControls = editorHeader,
+                    actions = EditorPageActions(
+                        onSelectPart = { partId ->
+                            if (partId != document.activePart.id) {
+                                document = document.selectPart(partId)
+                                selectedEvent = -1
+                                selectedString = -1
+                                selectedPlaybackRange = null
+                                playheadEventIndex = 0
+                                historyResetRequestId += 1
+                            }
+                        },
+                        onAddPart = { preset ->
+                            updateDocument(document.addInstrument(preset))
+                            selectedEvent = -1
+                            selectedString = -1
+                            selectedPlaybackRange = null
+                            playheadEventIndex = 0
+                            historyResetRequestId += 1
+                        },
+                        onSetPartProgram = { program ->
+                            updateDocument(document.updatePart(document.activePart.id) { it.copy(midiProgram = program) })
+                        },
+                        onSetPlaybackStart = { playheadEventIndex = it },
+                        onPlaybackSelectionChanged = { selectedPlaybackRange = it },
+                        onSelect = { event, string ->
+                            selectedEvent = event
+                            selectedString = string
+                        },
+                        onMove = { event, from, target ->
+                            val updated = moveNote(document, event, from, target)
+                            if (updated != document) {
+                                updateDocument(updated)
+                                selectedEvent = event
+                                selectedString = target
+                                updated.tuning.getOrNull(target)
+                                    ?.plus(updated.events.getOrNull(event)?.frets?.getOrNull(target) ?: 0)
+                                    ?.let(::PlatformAuditionNote)
+                            }
+                        },
+                        onSetFret = { event, string, fret ->
+                            val updated = setNoteFret(document, event, string, fret)
+                            updateDocument(updated)
+                            updated.tuning.getOrNull(string)?.plus(fret)?.let(::PlatformAuditionNote)
+                        },
+                        onMoveDirection = { selection, direction ->
+                            val notesToMove = selection.ifEmpty {
+                                if (selectedEvent >= 0 && selectedString >= 0) {
+                                    setOf(NotePosition(selectedEvent, selectedString))
+                                } else {
+                                    emptySet()
+                                }
+                            }
+                            val result = moveNotesInDirection(document, notesToMove, direction)
+                            if (result.applied) {
+                                updateDocument(result.document)
+                                result.movedSelection.singleOrNull()?.let { moved ->
+                                    selectedEvent = moved.eventIndex
+                                    selectedString = moved.stringIndex
+                                }
+                            }
+                            if (result.applied) result.movedSelection else selection
+                        },
+                        onAdd = { event, string, fret, lengthCode ->
+                            updateDocument(addNoteAt(document, event, string, fret, lengthCode))
+                            selectedEvent = event.coerceIn(0, document.events.lastIndex.coerceAtLeast(0))
+                            selectedString = string
+                            document.tuning.getOrNull(string)?.plus(fret)?.let(::PlatformAuditionNote)
+                        },
+                        onSetLength = { positions, code ->
+                            updateDocument(setNoteLengthsAt(document, positions, code))
+                            durationEditedEventIndex = selectedEvent.takeIf { eventIndex ->
+                                eventIndex >= 0 && positions.any { it.eventIndex == eventIndex }
+                            } ?: positions.minOfOrNull { it.eventIndex } ?: -1
+                            durationPreviewRequestId += 1
+                        },
+                        onConvertToRest = { eventIndices ->
+                            updateDocument(convertEventsToRests(document, eventIndices))
+                            selectedEvent = -1
+                            selectedString = -1
+                        },
+                        onRemoveRest = { eventIndex ->
+                            updateDocument(removeRestAt(document, eventIndex))
+                        },
+                        onSetRestLength = { eventIndex, code ->
+                            updateDocument(setRestLengthAt(document, eventIndex, code))
+                            durationEditedEventIndex = eventIndex
+                            durationPreviewRequestId += 1
+                        },
+                        onRemoveBar = { eventIndex ->
+                            updateDocument(removeMeasureMarker(document, eventIndex))
+                        },
+                        onAddBar = { eventIndex ->
+                            updateDocument(addMeasureBar(document, eventIndex))
+                        },
+                        onAddRepeatStart = { eventIndex ->
+                            updateDocument(addRepeatStart(document, eventIndex))
+                        },
+                        onAddRepeatEnd = { eventIndex ->
+                            updateDocument(addRepeatEnd(document, eventIndex))
+                        },
+                        onAdjustRepeatCount = { eventIndex, delta ->
+                            updateDocument(adjustRepeatCount(document, eventIndex, delta), "repeat-count-$eventIndex")
+                        },
+                        onMoveBar = { fromEvent, toEvent ->
+                            val moved = moveMeasureBar(document, fromEvent, toEvent)
+                            val didMove = moved != document
+                            updateDocument(moved)
+                            didMove
+                        },
+                        onDelete = {
+                            updateDocument(deleteNoteAt(document, selectedEvent, selectedString))
+                            selectedEvent = selectedEvent.coerceAtMost(document.events.lastIndex)
+                            selectedString = -1
+                        },
+                        onGroupTransform = { request ->
+                            val result = applyGroupFretOperation(document, request)
+                            if (result.applied) {
+                                val coalesceKey = request.operation.takeIf { it != GroupFretOperation.TRANSPOSE }
+                                    ?.let { "fret-range-$it" }
+                                updateDocument(result.document, coalesceKey)
+                                selectedEvent = -1
+                                selectedString = -1
+                            }
+                            result
+                        },
+                    ),
+                )
             } else if (page == 1) {
                 ScalePage(document.tuning, chordDatabase, chordDatabaseLoaded, defaultNaming)
             } else {
@@ -543,9 +592,71 @@ private fun stringLabel(part: TabPart, stringIndex: Int, naming: ChordNamingSyst
     return listOf("e", noteName(11, naming), "G", "D", "A", "E").getOrElse(stringIndex) { "S${stringIndex + 1}" }
 }
 
+private data class EditorPageActions(
+    val onSelectPart: (String) -> Unit,
+    val onAddPart: (TabInstrumentPreset) -> Unit,
+    val onSetPartProgram: (Int) -> Unit,
+    val onSetPlaybackStart: (Int) -> Unit,
+    val onPlaybackSelectionChanged: (IntRange?) -> Unit,
+    val onSelect: (Int, Int) -> Unit,
+    val onMove: (Int, Int, Int) -> Unit,
+    val onSetFret: (Int, Int, Int) -> Unit,
+    val onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>,
+    val onAdd: (Int, Int, Int, Int) -> Unit,
+    val onSetLength: (Set<NotePosition>, Int) -> Unit,
+    val onConvertToRest: (Set<Int>) -> Unit,
+    val onRemoveRest: (Int) -> Unit,
+    val onSetRestLength: (Int, Int) -> Unit,
+    val onRemoveBar: (Int) -> Unit,
+    val onAddBar: (Int) -> Unit,
+    val onAddRepeatStart: (Int) -> Unit,
+    val onAddRepeatEnd: (Int) -> Unit,
+    val onAdjustRepeatCount: (Int, Int) -> Unit,
+    val onMoveBar: (Int, Int) -> Boolean,
+    val onDelete: () -> Unit,
+    val onGroupTransform: (GroupFretRequest) -> GroupFretResult,
+)
+
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, upcomingNoteZoomEnabled: Boolean, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, phoneLayout: Boolean, openControlsRequest: Int, globalControls: @Composable () -> Unit, onSelectPart: (String) -> Unit, onAddPart: (TabInstrumentPreset) -> Unit, onSetPartProgram: (Int) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
+private fun EditorPage(
+    document: TabDocument,
+    selectedEvent: Int,
+    selectedString: Int,
+    playingEventIndex: Int,
+    playheadEventIndex: Int,
+    upcomingNoteZoomEnabled: Boolean,
+    historyResetRequestId: Int,
+    naming: ChordNamingSystem,
+    namingOverride: ChordNamingSystem?,
+    onNamingOverride: (ChordNamingSystem?) -> Unit,
+    phoneLayout: Boolean,
+    openControlsRequest: Int,
+    globalControls: @Composable () -> Unit,
+    actions: EditorPageActions,
+) {
+    val onSelectPart = actions.onSelectPart
+    val onAddPart = actions.onAddPart
+    val onSetPartProgram = actions.onSetPartProgram
+    val onSetPlaybackStart = actions.onSetPlaybackStart
+    val onPlaybackSelectionChanged = actions.onPlaybackSelectionChanged
+    val onSelect = actions.onSelect
+    val onMove = actions.onMove
+    val onSetFret = actions.onSetFret
+    val onMoveDirection = actions.onMoveDirection
+    val onAdd = actions.onAdd
+    val onSetLength = actions.onSetLength
+    val onConvertToRest = actions.onConvertToRest
+    val onRemoveRest = actions.onRemoveRest
+    val onSetRestLength = actions.onSetRestLength
+    val onRemoveBar = actions.onRemoveBar
+    val onAddBar = actions.onAddBar
+    val onAddRepeatStart = actions.onAddRepeatStart
+    val onAddRepeatEnd = actions.onAddRepeatEnd
+    val onAdjustRepeatCount = actions.onAdjustRepeatCount
+    val onMoveBar = actions.onMoveBar
+    val onDelete = actions.onDelete
+    val onGroupTransform = actions.onGroupTransform
     val textMeasurer = rememberTextMeasurer()
     var dragTargetString by remember { mutableIntStateOf(-1) }
     var dragTargetFret by remember { mutableIntStateOf(-1) }
@@ -1884,16 +1995,16 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
         var lowest: Triple<Int, Int, Int>? = null
         for (string in tuning.indices) {
             val openPitch = tuning[string]
-            for (fret in 0..12) {
-                val pitch = openPitch + fret
-                if (((pitch % 12) + 12) % 12 == key) {
+            for (fretWithinOctave in 0 until SEMITONES_PER_OCTAVE) {
+                val pitch = openPitch + fretWithinOctave
+                if (pitchClassOf(pitch) == key) {
                     val current = lowest
                     if (
                         current == null || pitch < current.first ||
-                        (pitch == current.first && fret < current.third) ||
-                        (pitch == current.first && fret == current.third && string < current.second)
+                        (pitch == current.first && fretWithinOctave < current.third) ||
+                        (pitch == current.first && fretWithinOctave == current.third && string < current.second)
                     ) {
-                        lowest = Triple(pitch, string, fret)
+                        lowest = Triple(pitch, string, fretWithinOctave)
                     }
                 }
             }
