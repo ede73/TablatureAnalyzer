@@ -15,6 +15,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Slider
@@ -43,6 +44,11 @@ actual fun GuitarInputPanel(
     naming: ChordNamingSystem,
     onDetectedPitches: (List<Int>, ChordSymbol?) -> Unit
 ) {
+    var panelExpanded by remember { mutableStateOf(true) }
+    TextButton(onClick = { panelExpanded = !panelExpanded }) {
+        Text(if (panelExpanded) "Hide guitar input" else "Show guitar input", fontSize = 11.sp)
+    }
+    if (panelExpanded) {
     val context = LocalContext.current
     var permissionGranted by remember {
         mutableStateOf(ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED)
@@ -66,7 +72,12 @@ actual fun GuitarInputPanel(
         if (granted) status = "Microphone ready" else status = "Microphone permission denied"
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(panelExpanded) {
+        if (!panelExpanded) {
+            capture?.stop()
+            capture = null
+            listening = false
+        }
         onDispose {
             capture?.stop()
             capture = null
@@ -161,6 +172,7 @@ actual fun GuitarInputPanel(
                 Text(if (pitches.isEmpty()) "Play one note to add it to the tab" else "Detected: ${pitches.joinToString(" · ") { midiNoteName(it) }}", fontSize = 12.sp)
             }
         }
+    }
     }
 }
 
