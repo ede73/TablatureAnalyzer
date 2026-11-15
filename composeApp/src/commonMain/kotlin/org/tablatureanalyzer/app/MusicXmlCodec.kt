@@ -6,18 +6,30 @@ object MusicXmlCodec {
     private const val DEFAULT_DURATION = OUTPUT_DIVISIONS
 
     fun encode(document: TabDocument): String {
-        val divisions = document.divisions.coerceAtLeast(1)
+        require(document.parts.count { !it.isPercussion } <= 15) { "MusicXML MIDI metadata supports at most 15 pitched instrument parts." }
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n")
         sb.append("<score-partwise version=\"4.0\">\n")
         sb.append("  <work><work-title>Tablature Analyzer</work-title></work>\n")
         sb.append("  <identification><encoding><software>Tablature Analyzer</software></encoding></identification>\n")
-        sb.append("  <part-list><score-part id=\"P1\"><part-name>Guitar</part-name></score-part></part-list>\n")
-        sb.append("  <part id=\"P1\">\n")
+        sb.append("  <part-list>\n")
+        document.parts.forEachIndexed { index, part ->
+            val id = "P${index + 1}"
+            sb.append("    <score-part id=\"").append(id).append("\"><part-name>")
+                .append(xmlEscape(part.name)).append("</part-name><midi-instrument id=\"").append(id)
+                .append("-I1\"><midi-channel>").append(midiChannel(index, document.parts))
+                .append("</midi-channel><midi-program>").append(part.midiProgram.coerceIn(0, 127) + 1)
+                .append("</midi-program></midi-instrument></score-part>\n")
+        }
+        sb.append("  </part-list>\n")
+        document.parts.forEachIndexed { partIndex, part ->
+        val id = "P${partIndex + 1}"
+        val divisions = part.divisions.coerceAtLeast(1)
+        sb.append("  <part id=\"").append(id).append("\">\n")
 
         val measures = mutableListOf<Pair<Int, List<Pair<Int, TabEvent>>>>()
         var pending = mutableListOf<Pair<Int, TabEvent>>()
-        document.events.forEachIndexed { index, event ->
+        part.events.forEachIndexed { index, event ->
             pending += index to event
             if (event.barAfter) {
                 measures += measures.size + 1 to pending
@@ -26,10 +38,10 @@ object MusicXmlCodec {
         }
         if (pending.isNotEmpty() || measures.isEmpty()) measures += measures.size + 1 to pending
 
-        val tempos = document.tempoChanges.associateBy { it.eventIndex }
-        val signatures = document.timeSignatures.associateBy { it.eventIndex }
-        var currentSignature = document.timeSignatures.minByOrNull { it.eventIndex } ?: TabTimeSignatureChange(0, 4, 4)
-        var currentTempo = document.tempoChanges.minByOrNull { it.eventIndex }?.beatsPerMinute ?: 120
+        val tempos = part.tempoChanges.associateBy { it.eventIndex }
+        val signatures = part.timeSignatures.associateBy { it.eventIndex }
+        var currentSignature = part.timeSignatures.minByOrNull { it.eventIndex } ?: TabTimeSignatureChange(0, 4, 4)
+        var currentTempo = part.tempoChanges.minByOrNull { it.eventIndex }?.beatsPerMinute ?: 120
 
         measures.forEachIndexed { measureIndex, (measureNumber, rows) ->
             val firstEventIndex = rows.firstOrNull()?.first ?: 0
@@ -42,10 +54,10 @@ object MusicXmlCodec {
                     .append("</beats><beat-type>").append(currentSignature.beatType.coerceAtLeast(1)).append("</beat-type></time>\n")
                 sb.append("        <clef><sign>TAB</sign></clef>\n")
                 if (measureIndex == 0) {
-                    sb.append("        <staff-details><staff-type>alternate</staff-type><staff-lines>").append(document.tuning.size).append("</staff-lines>\n")
-                    document.tuning.forEachIndexed { stringIndex, pitch ->
+                    sb.append("        <staff-details><staff-type>alternate</staff-type><staff-lines>").append(part.tuning.size).append("</staff-lines>\n")
+                    part.tuning.forEachIndexed { stringIndex, pitch ->
                         val (step, alter, octave) = pitchName(pitch)
-                        val line = document.tuning.size - stringIndex
+                        val line = part.tuning.size - stringIndex
                         sb.append("          <staff-tuning line=\"").append(line).append("\"><tuning-step>")
                             .append(step).append("</tuning-step>")
                         if (alter != 0) sb.append("<tuning-alter>").append(alter).append("</tuning-alter>")
@@ -87,8 +99,8 @@ object MusicXmlCodec {
                     }.sortedWith(compareByDescending<Triple<Int, Int, Int?>> { it.second }.thenBy { it.first })
                     notes.forEachIndexed { noteIndex, (string, duration, lengthCode) ->
                         val fret = event.frets[string] ?: return@forEachIndexed
-                        val midiPitch = document.tuning[string] + fret
-                        appendNote(sb, document, event, string, midiPitch, duration, divisions, noteIndex > 0, lengthCode)
+                        val midiPitch = part.tuning[string] + fret
+                        appendNote(sb, event, string, midiPitch, duration, divisions, noteIndex > 0, lengthCode)
                     }
                 }
             }
@@ -103,14 +115,29 @@ object MusicXmlCodec {
             }
             sb.append("    </measure>\n")
         }
-        sb.append("  </part>\n</score-partwise>\n")
+        sb.append("  </part>\n")
+        }
+        sb.append("</score-partwise>\n")
         return sb.toString()
     }
 
     fun parse(source: String): TabDocument {
         val root = XmlTreeParser(source).parse()
         require(root.localName() == "score-partwise") { "Expected a MusicXML score-partwise document" }
-        val part = root.children("part").firstOrNull() ?: error("MusicXML document has no part")
+        val scoreParts = root.child("part-list")?.children("score-part").orEmpty()
+        val parts = root.children("part").mapIndexed { index, partNode ->
+            val id = partNode.attributes["id"] ?: "P${index + 1}"
+            val scorePart = scoreParts.firstOrNull { it.attributes["id"] == id }
+            val name = scorePart?.child("part-name")?.textValue()?.ifBlank { null } ?: "Part ${index + 1}"
+            val program = scorePart?.descendants("midi-program")?.firstOrNull()?.intText()?.minus(1)?.coerceIn(0, 127) ?: 24
+            val percussion = scorePart?.descendants("midi-channel")?.firstOrNull()?.intText() == 10
+            parsePart(partNode, id, name, program, percussion)
+        }
+        require(parts.isNotEmpty()) { "MusicXML document has no part" }
+        return TabDocument.fromParts(parts)
+    }
+
+    private fun parsePart(part: XmlNode, id: String, name: String, program: Int, percussion: Boolean): TabPart {
         var divisions = OUTPUT_DIVISIONS
         var sourceTime = TabTimeSignatureChange(0, 4, 4)
         var tuning = listOf(64, 59, 55, 50, 45, 40)
@@ -210,14 +237,14 @@ object MusicXmlCodec {
 
         val normalizedSignatures = signatures.distinctBy { it.eventIndex }.ifEmpty { listOf(TabTimeSignatureChange(0, 4, 4)) }
         val normalizedTempos = tempos.distinctBy { it.eventIndex }.ifEmpty { listOf(TabTempoChange(0, 120)) }
-        return TabDocument(tuning, events, OUTPUT_DIVISIONS, normalizedTempos, normalizedSignatures)
+        return TabPart(id, name, tuning, events, program, OUTPUT_DIVISIONS, normalizedTempos, normalizedSignatures, percussion)
     }
 
     private data class MutableEvent(val frets: MutableList<Int?>, val actions: MutableList<Char?> = MutableList(frets.size) { null }, val lengthCodes: MutableList<Int?> = MutableList(frets.size) { null }, val durationUnits: MutableList<Int?> = MutableList(frets.size) { null }, var restDuration: Int? = null) {
         constructor(strings: Int) : this(MutableList(strings) { null })
     }
 
-    private fun appendNote(sb: StringBuilder, document: TabDocument, event: TabEvent, string: Int, midi: Int, duration: Int, divisions: Int, chord: Boolean, lengthCode: Int?) {
+    private fun appendNote(sb: StringBuilder, event: TabEvent, string: Int, midi: Int, duration: Int, divisions: Int, chord: Boolean, lengthCode: Int?) {
         val (step, alter, octave) = pitchName(midi)
         sb.append("      <note>")
         if (chord) sb.append("<chord/>")
@@ -286,6 +313,12 @@ object MusicXmlCodec {
         val alters = listOf(0, 1, 0, 1, 0, 0, 1, 0, 1, 0, 1, 0)
         val pitchClass = ((midi % 12) + 12) % 12
         return Triple(names[pitchClass], alters[pitchClass], midi / 12 - 1)
+    }
+
+    private fun midiChannel(partIndex: Int, parts: List<TabPart>): Int {
+        if (parts[partIndex].isPercussion) return 10
+        val melodicIndex = parts.take(partIndex).count { !it.isPercussion }
+        return if (melodicIndex < 9) melodicIndex + 1 else melodicIndex + 2
     }
 
     private fun pitchValue(step: String, alter: Int, octave: Int): Int {

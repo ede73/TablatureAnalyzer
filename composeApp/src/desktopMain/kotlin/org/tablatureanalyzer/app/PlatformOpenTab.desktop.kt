@@ -25,12 +25,20 @@ private fun rememberFileDialogDirectory(chooser: JFileChooser) {
 }
 
 @Composable
-actual fun PlatformOpenTabButton(onText: (String) -> Unit) {
+actual fun PlatformOpenTabButton(onBytes: (ByteArray) -> Unit) {
     OutlinedButton(onClick = {
-        val picker = rememberedFileChooser().apply { fileFilter = FileNameExtensionFilter("Tab / MusicXML / editable project (*.tab, *.txt, *.musicxml, *.xml, *.ta)", "tab", "txt", "musicxml", "xml", "ta") }
+        val picker = rememberedFileChooser().apply {
+            dialogTitle = "Open tab, MusicXML, or editable project"
+            val supportedFormats = FileNameExtensionFilter(
+                "Tab / PowerTab / MusicXML / editable project (*.tab, *.ptb, *.ptab, *.txt, *.musicxml, *.xml, *.ta)",
+                "tab", "ptb", "ptab", "txt", "musicxml", "xml", "ta"
+            )
+            addChoosableFileFilter(supportedFormats)
+            fileFilter = supportedFormats
+        }
         val result = picker.showOpenDialog(null)
         rememberFileDialogDirectory(picker)
-        if (result == JFileChooser.APPROVE_OPTION) onText(File(picker.selectedFile.toURI()).readText())
+        if (result == JFileChooser.APPROVE_OPTION) onBytes(File(picker.selectedFile.toURI()).readBytes())
     }) { Text("Open") }
 }
 
