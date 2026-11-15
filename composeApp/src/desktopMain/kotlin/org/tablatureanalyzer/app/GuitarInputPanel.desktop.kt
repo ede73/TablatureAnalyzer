@@ -75,6 +75,7 @@ actual fun GuitarInputPanel(
     var liveSpectrum by remember { mutableStateOf(emptyList<Float>()) }
     var sampleSaveStatus by remember { mutableStateOf("") }
     var capture by remember { mutableStateOf<DesktopGuitarCapture?>(null) }
+    var panelExpanded by remember { mutableStateOf(true) }
     var calibrationDialog by remember { mutableStateOf(false) }
     var calibrationStep by remember { mutableStateOf(0) }
     var calibrationStartedAt by remember { mutableStateOf(0L) }
@@ -312,7 +313,11 @@ actual fun GuitarInputPanel(
                     }) { Text("Save last 10 s", fontSize = 11.sp) }
                 }
                 Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1)
+                TextButton(onClick = { panelExpanded = !panelExpanded }) {
+                    Text(if (panelExpanded) "Hide" else "Show", fontSize = 11.sp)
+                }
             }
+            if (panelExpanded) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 WavePlaybackButton()
             }
@@ -390,6 +395,10 @@ actual fun GuitarInputPanel(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 11.sp
                 )
+            }
+            } else if (listening) {
+                val db = if (liveRms > 0f) (20.0 * ln(liveRms.toDouble()) / ln(10.0)).roundToInt() else -96
+                Text("Listening · ${db} dBFS", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
             }
         }
     }
