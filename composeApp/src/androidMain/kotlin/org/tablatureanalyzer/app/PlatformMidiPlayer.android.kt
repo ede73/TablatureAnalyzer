@@ -1,5 +1,8 @@
 package org.tablatureanalyzer.app
 
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -28,19 +31,28 @@ actual fun PlatformAuditionNote(midiPitch: Int) {
                 pcm[i * 2] = sample.toByte()
                 pcm[i * 2 + 1] = (sample.toInt() shr 8).toByte()
             }
-            @Suppress("DEPRECATION")
-            val track = android.media.AudioTrack(
-                android.media.AudioManager.STREAM_MUSIC,
-                sampleRate,
-                android.media.AudioFormat.CHANNEL_OUT_MONO,
-                android.media.AudioFormat.ENCODING_PCM_16BIT,
-                pcm.size,
-                android.media.AudioTrack.MODE_STATIC
-            )
-            track.write(pcm, 0, pcm.size)
-            track.play()
-            Thread.sleep(470)
-            track.release()
+            val format = AudioFormat.Builder()
+                .setSampleRate(sampleRate)
+                .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                .build()
+            val attributes = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                .build()
+            val track = AudioTrack.Builder()
+                .setAudioAttributes(attributes)
+                .setAudioFormat(format)
+                .setBufferSizeInBytes(pcm.size)
+                .setTransferMode(AudioTrack.MODE_STATIC)
+                .build()
+            try {
+                track.write(pcm, 0, pcm.size)
+                track.play()
+                Thread.sleep(470)
+            } finally {
+                track.release()
+            }
         }
     }, "tab-note-audition").apply { isDaemon = true }.start()
 }
