@@ -255,6 +255,13 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                         playheadEventIndex = 0
                         historyResetRequestId += 1
                     }
+                }, onAddPart = { preset ->
+                    updateDocument(document.addInstrument(preset))
+                    selectedEvent = -1
+                    selectedString = -1
+                    selectedPlaybackRange = null
+                    playheadEventIndex = 0
+                    historyResetRequestId += 1
                 }, onSetPlaybackStart = { playheadEventIndex = it }, onPlaybackSelectionChanged = { selectedPlaybackRange = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
                     val updated = moveNote(document, event, from, target)
                     if (updated != document) {
@@ -406,8 +413,7 @@ private fun NamingSelector(
 }
 
 @Composable
-private fun PartSelector(document: TabDocument, onSelect: (String) -> Unit) {
-    if (document.parts.size < 2) return
+private fun PartSelector(document: TabDocument, onSelect: (String) -> Unit, onAdd: (TabInstrumentPreset) -> Unit) {
     var expanded by remember { mutableStateOf(false) }
     Box {
         TextButton(onClick = { expanded = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
@@ -420,13 +426,25 @@ private fun PartSelector(document: TabDocument, onSelect: (String) -> Unit) {
                     onClick = { onSelect(part.id); expanded = false }
                 )
             }
+            HorizontalDivider()
+            TabInstrumentPreset.values().forEach { preset ->
+                DropdownMenuItem(
+                    text = { Text("Add ${preset.displayName}") },
+                    onClick = { onAdd(preset); expanded = false }
+                )
+            }
         }
     }
 }
 
+private fun stringLabel(part: TabPart, stringIndex: Int, naming: ChordNamingSystem): String {
+    if (part.isPercussion) return listOf("Ride", "Crash", "Open", "Hi-hat", "Snare", "Kick").getOrElse(stringIndex) { "Drum ${stringIndex + 1}" }
+    return listOf("e", noteName(11, naming), "G", "D", "A", "E").getOrElse(stringIndex) { "S${stringIndex + 1}" }
+}
+
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSelectPart: (String) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
+private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSelectPart: (String) -> Unit, onAddPart: (TabInstrumentPreset) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
     val textMeasurer = rememberTextMeasurer()
     var dragTargetString by remember { mutableIntStateOf(-1) }
     var dragTargetFret by remember { mutableIntStateOf(-1) }
@@ -499,7 +517,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
         ) {
             Column(Modifier.fillMaxWidth().verticalScroll(staffScrollState).padding(if (document.events.isEmpty()) 10.dp else 16.dp)) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                    PartSelector(document, onSelectPart)
+                    PartSelector(document, onSelectPart, onAddPart)
                     NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
                     Text("Click empty position to set play start · select notes to loop · drag up/down: string · left/right: fret", fontSize = 12.sp, color = muted)
                 }
@@ -550,7 +568,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                             document.tuning.forEachIndexed { string, _ ->
                                 val y = 26.dp.toPx() + rowGap * string
                                 drawLine(line, Offset(left, y), Offset(size.width - 8.dp.toPx(), y), strokeWidth = 1.4f)
-                                drawText(textMeasurer, listOf("e", noteName(11, naming), "G", "D", "A", "E").getOrElse(string) { "S${string + 1}" }, Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
+                                drawText(textMeasurer, stringLabel(document.activePart, string, naming), Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
                             }
                         }
                 } else {
@@ -848,7 +866,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                 for (s in document.tuning.indices) {
                                     val y = top + 26.dp.toPx() + rowGap * s
                                     drawLine(line, Offset(left, y), Offset(size.width - 8.dp.toPx(), y), strokeWidth = 1.4f)
-                                    drawText(textMeasurer, listOf("e", noteName(11, naming), "G", "D", "A", "E").getOrElse(s) { "S${s + 1}" }, Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
+                                    drawText(textMeasurer, stringLabel(document.activePart, s, naming), Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
                                 }
                             }
                             document.events.forEachIndexed { i, event ->
