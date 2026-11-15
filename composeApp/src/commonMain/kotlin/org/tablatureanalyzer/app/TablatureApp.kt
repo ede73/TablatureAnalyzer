@@ -283,9 +283,13 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                         updateDocument(updated)
                         selectedEvent = event
                         selectedString = target
+                        updated.tuning.getOrNull(target)?.plus(updated.events.getOrNull(event)?.frets?.getOrNull(target) ?: 0)
+                            ?.let(::PlatformAuditionNote)
                     }
                 }, onSetFret = { event, string, fret ->
-                    updateDocument(setNoteFret(document, event, string, fret))
+                    val updated = setNoteFret(document, event, string, fret)
+                    updateDocument(updated)
+                    updated.tuning.getOrNull(string)?.plus(fret)?.let(::PlatformAuditionNote)
                 }, onMoveDirection = { selection, direction ->
                     val notesToMove = selection.ifEmpty {
                         if (selectedEvent >= 0 && selectedString >= 0) setOf(NotePosition(selectedEvent, selectedString)) else emptySet()
@@ -303,6 +307,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                     updateDocument(addNoteAt(document, event, string, fret, lengthCode))
                     selectedEvent = event.coerceIn(0, document.events.lastIndex.coerceAtLeast(0))
                     selectedString = string
+                    document.tuning.getOrNull(string)?.plus(fret)?.let(::PlatformAuditionNote)
                 }, onSetLength = { positions, code ->
                     updateDocument(setNoteLengthsAt(document, positions, code))
                     durationEditedEventIndex = selectedEvent.takeIf { eventIndex -> eventIndex >= 0 && positions.any { it.eventIndex == eventIndex } }
