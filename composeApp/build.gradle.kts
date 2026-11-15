@@ -8,6 +8,7 @@ plugins {
     id("com.android.library")
 }
 
+@OptIn(org.jetbrains.compose.ExperimentalComposeLibrary::class)
 kotlin {
     androidTarget()
     jvm("desktop")
@@ -22,6 +23,7 @@ kotlin {
         commonTest.dependencies { implementation(kotlin("test")) }
         androidMain.dependencies { implementation("androidx.activity:activity-compose:1.10.1") }
         val desktopMain by getting { dependencies { implementation(compose.desktop.currentOs) } }
+        val desktopTest by getting { dependencies { implementation(compose.uiTest) } }
     }
 }
 
