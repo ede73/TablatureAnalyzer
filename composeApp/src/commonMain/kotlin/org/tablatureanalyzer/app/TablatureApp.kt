@@ -1323,7 +1323,7 @@ private fun EditorPage(
                                 val local = i % columnsPerSystem
                                 val top = system * systemHeightPx
                                 val x = left + colGapPx * (local + 1)
-                                if (playingEventIndex < 0 && playheadEventIndex == i) {
+                                if (playheadEventIndex == i) {
                                     val cursorTop = top + 12.dp.toPx()
                                     val cursorBottom = top + minOf(214.dp.toPx(), systemHeightPx - 4.dp.toPx())
                                     var dashY = cursorTop
