@@ -16,6 +16,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.Slider
@@ -29,6 +30,8 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -289,6 +292,17 @@ actual fun GuitarInputPanel(
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), shape = RoundedCornerShape(12.dp)) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                IconButton(
+                    onClick = {
+                        panelExpanded = !panelExpanded
+                        PlatformPreferences.put("guitarInputPanelExpanded_${mode.name}", panelExpanded.toString())
+                    },
+                    modifier = Modifier.semantics {
+                        contentDescription = if (panelExpanded) "Collapse guitar input" else "Expand guitar input"
+                    }
+                ) {
+                    Text(if (panelExpanded) "⌃" else "⌄", fontSize = 18.sp, color = MaterialTheme.colorScheme.onSurface)
+                }
                 Text(if (mode == GuitarInputMode.CHORD_GUESS) "Guess chord" else "Record from guitar", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurface)
                 Button(enabled = devices.isNotEmpty(), onClick = ::toggleListening) { Text(if (listening) "Stop" else "Listen") }
                 Box {
@@ -315,12 +329,6 @@ actual fun GuitarInputPanel(
                     }) { Text("Save last 10 s", fontSize = 11.sp) }
                 }
                 Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1)
-                OutlinedButton(onClick = {
-                    panelExpanded = !panelExpanded
-                    PlatformPreferences.put("guitarInputPanelExpanded_${mode.name}", panelExpanded.toString())
-                }) {
-                    Text(if (panelExpanded) "Hide controls" else "Show controls", fontSize = 11.sp)
-                }
             }
             if (panelExpanded) {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
