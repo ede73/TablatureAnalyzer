@@ -29,6 +29,13 @@ data class TabDocument(
 object TabCodec {
     private val defaultTuning = listOf(64, 59, 55, 50, 45, 40)
 
+    fun parse(source: ByteArray): TabDocument =
+        if (source.size >= 4 && source[0] == 'p'.code.toByte() && source[1] == 't'.code.toByte() && source[2] == 'a'.code.toByte() && source[3] == 'b'.code.toByte()) {
+            PowerTabV4Codec.parse(source)
+        } else {
+            parse(source.decodeToString())
+        }
+
     fun parse(source: String): TabDocument =
         if (source.contains("<score-partwise") || source.contains(":score-partwise")) MusicXmlCodec.parse(source)
         else if (source.lineSequence().firstOrNull()?.trim()?.startsWith("#Internalstatesavefile ") == true) parseInternal(source)

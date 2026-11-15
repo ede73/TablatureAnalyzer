@@ -147,6 +147,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
     var showImport by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
     var importError by remember { mutableStateOf<String?>(null) }
+    var openError by remember { mutableStateOf<String?>(null) }
     var showNewTabConfirmation by remember { mutableStateOf(false) }
     var playingEventIndex by remember { mutableIntStateOf(-1) }
     var durationEditedEventIndex by remember { mutableIntStateOf(-1) }
@@ -201,7 +202,11 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                         if (hasContent) showNewTabConfirmation = true
                         else loadDocument(TabDocument(document.tuning, emptyList()))
                     }) { Text("New") }
-                    PlatformOpenTabButton(onText = { text -> loadDocument(TabCodec.parse(text)) })
+                    PlatformOpenTabButton(onBytes = { bytes ->
+                        runCatching { TabCodec.parse(bytes) }
+                            .onSuccess(::loadDocument)
+                            .onFailure { openError = it.message ?: "Could not read this file." }
+                    })
                     OutlinedButton(onClick = { showImport = true }) { Text("Paste") }
                     PlatformSaveProjectButton(TabCodec.encodeInternal(document))
                     PlatformSaveMusicXmlButton(MusicXmlCodec.encode(document))
@@ -342,6 +347,14 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                         showImport = false
                     }.onFailure { importError = it.message ?: "Could not read this tab." }
                 }, enabled = importText.isNotBlank()) { Text("Load") } }, dismissButton = { TextButton(onClick = { showImport = false }) { Text("Cancel") } })
+        }
+        openError?.let { message ->
+            AlertDialog(
+                onDismissRequest = { openError = null },
+                title = { Text("Could not open file") },
+                text = { Text(message) },
+                confirmButton = { TextButton(onClick = { openError = null }) { Text("OK") } }
+            )
         }
         if (showNewTabConfirmation) {
             AlertDialog(
