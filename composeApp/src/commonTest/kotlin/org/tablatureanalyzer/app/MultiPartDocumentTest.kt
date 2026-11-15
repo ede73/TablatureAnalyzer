@@ -77,4 +77,13 @@ class MultiPartDocumentTest {
             assertTrue(parsed.parts[1].events[1].barAfter)
         }
     }
+
+    @Test
+    fun changingMidiInstrumentAffectsOnlyTheSelectedPartAndSurvivesExport() {
+        val original = score().updatePart("bass") { it.copy(midiProgram = 80) }
+
+        assertEquals(listOf(24, 80), original.parts.map { it.midiProgram })
+        assertEquals(listOf(24, 80), TabCodec.parseInternal(TabCodec.encodeInternal(original)).parts.map { it.midiProgram })
+        assertEquals(listOf(24, 80), MusicXmlCodec.parse(MusicXmlCodec.encode(original)).parts.map { it.midiProgram })
+    }
 }
