@@ -67,6 +67,9 @@ private val highlight = Color(0xFF79C7B2)
 private val selection = Color(0xFF294A3F)
 private val error = Color(0xFFF29A90)
 private const val UNDO_HISTORY_LIMIT = 100
+private const val SEMITONES_PER_OCTAVE = 12
+
+private fun pitchClassOf(midiPitch: Int): Int = midiPitch.mod(SEMITONES_PER_OCTAVE)
 
 private enum class MarkerPlacement { BAR, REPEAT_START, REPEAT_END }
 
@@ -1992,12 +1995,24 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
         selectedScaleChord?.let { database.find(tuning, it) }.orEmpty()
     }
     val mainOctaveRoot = remember(tuning, key) {
-        tuning.flatMapIndexed { string, openPitch ->
-            (0..12).mapNotNull { fret ->
-                val pitch = openPitch + fret
-                if (((pitch % 12) + 12) % 12 == key) Triple(pitch, string, fret) else null
+        var lowest: Triple<Int, Int, Int>? = null
+        for (string in tuning.indices) {
+            val openPitch = tuning[string]
+            for (fretWithinOctave in 0 until SEMITONES_PER_OCTAVE) {
+                val pitch = openPitch + fretWithinOctave
+                if (pitchClassOf(pitch) == key) {
+                    val current = lowest
+                    if (
+                        current == null || pitch < current.first ||
+                        (pitch == current.first && fretWithinOctave < current.third) ||
+                        (pitch == current.first && fretWithinOctave == current.third && string < current.second)
+                    ) {
+                        lowest = Triple(pitch, string, fretWithinOctave)
+                    }
+                }
             }
-        }.minWithOrNull(compareBy<Triple<Int, Int, Int>> { it.first }.thenBy { it.third }.thenBy { it.second })
+        }
+        lowest
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(16.dp)) {
