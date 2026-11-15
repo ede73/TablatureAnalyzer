@@ -71,6 +71,9 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int
             eventCallback(null)
         }
     }
+    LaunchedEffect(document.parts.map { it.id to it.midiProgram }) {
+        DesktopMidiPlayback.updatePrograms(document.parts)
+    }
     DisposableEffect(Unit) {
         onDispose {
             DesktopMidiPlayback.stop()
@@ -207,6 +210,8 @@ private object DesktopMidiPlayback {
     private const val PPQ = 480
     private var sequencer: javax.sound.midi.Sequencer? = null
     private var output: DesktopMidiOutput? = null
+    private var channelByPartId: Map<String, Int> = emptyMap()
+    private var programByPartId: Map<String, Int> = emptyMap()
 
     private data class ScheduledSlot(val eventIndex: Int, val startTick: Long, val endTick: Long)
 
@@ -219,6 +224,8 @@ private object DesktopMidiPlayback {
         require(document.parts.count { !it.isPercussion } <= 15) { "MIDI playback supports up to 15 pitched instrument parts." }
         val melodicChannels = (0..15).filter { it != 9 }.iterator()
         val channels = document.parts.map { part -> if (part.isPercussion) 9 else melodicChannels.next() }
+        channelByPartId = document.parts.mapIndexed { index, part -> part.id to channels[index] }.toMap()
+        programByPartId = document.parts.associate { it.id to it.midiProgram.coerceIn(0, 127) }
         document.parts.forEachIndexed { index, part ->
             addShort(track, ShortMessage.PROGRAM_CHANGE, channels[index], part.midiProgram.coerceIn(0, 127), 0, 0L)
         }
@@ -359,6 +366,20 @@ private object DesktopMidiPlayback {
     }
 
     @Synchronized
+    fun updatePrograms(parts: List<TabPart>) {
+        val receiver = output?.receiver ?: return
+        parts.forEach { part ->
+            val channel = channelByPartId[part.id] ?: return@forEach
+            val program = part.midiProgram.coerceIn(0, 127)
+            if (programByPartId[part.id] == program) return@forEach
+            val change = ShortMessage()
+            change.setMessage(ShortMessage.PROGRAM_CHANGE, channel, program, 0)
+            receiver.send(change, -1)
+            programByPartId = programByPartId + (part.id to program)
+        }
+    }
+
+    @Synchronized
     fun pause() {
         sequencer?.stop()
     }
@@ -378,6 +399,8 @@ private object DesktopMidiPlayback {
         sequencer = null
         output?.let { runCatching { it.close() } }
         output = null
+        channelByPartId = emptyMap()
+        programByPartId = emptyMap()
     }
 
     private fun addShort(track: Track, command: Int, channel: Int, data1: Int, data2: Int, tick: Long) {
