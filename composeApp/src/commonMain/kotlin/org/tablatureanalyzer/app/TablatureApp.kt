@@ -1,5 +1,7 @@
 package org.tablatureanalyzer.app
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -152,6 +154,12 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
     var showNewTabConfirmation by remember { mutableStateOf(false) }
     var openTabControlsRequest by remember { mutableIntStateOf(0) }
     var playingEventIndex by remember { mutableIntStateOf(-1) }
+    var upcomingNoteZoomEnabled by remember {
+        mutableStateOf(PlatformPreferences.get("upcomingNoteZoomEnabled")?.toBooleanStrictOrNull() ?: true)
+    }
+    LaunchedEffect(upcomingNoteZoomEnabled) {
+        PlatformPreferences.put("upcomingNoteZoomEnabled", upcomingNoteZoomEnabled.toString())
+    }
     var durationEditedEventIndex by remember { mutableIntStateOf(-1) }
     var durationPreviewRequestId by remember { mutableIntStateOf(0) }
     val chordDatabase = ChordDatabase.BuiltIn
@@ -218,6 +226,9 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                             playheadEventIndex,
                             selectedPlaybackRange
                         ) { eventIndex -> playingEventIndex = eventIndex ?: -1 }
+                        RadioOption("Next-note zoom", upcomingNoteZoomEnabled) {
+                            upcomingNoteZoomEnabled = !upcomingNoteZoomEnabled
+                        }
                     }
                     Spacer(Modifier.height(4.dp))
                     GuitarInputPanel(GuitarInputMode.TAB_RECORD, document.tuning, tabNaming) { pitches, _ ->
@@ -259,7 +270,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
             if (!phoneLayout) editorHeader()
             Spacer(Modifier.height(6.dp))
             if (page == 0) {
-                EditorPage(document, selectedEvent, selectedString, playingEventIndex, playheadEventIndex, historyResetRequestId, tabNaming, tabNamingOverride, { tabNamingOverride = it }, phoneLayout, openTabControlsRequest, editorHeader, onSelectPart = { partId ->
+                EditorPage(document, selectedEvent, selectedString, playingEventIndex, playheadEventIndex, upcomingNoteZoomEnabled, historyResetRequestId, tabNaming, tabNamingOverride, { tabNamingOverride = it }, phoneLayout, openTabControlsRequest, editorHeader, onSelectPart = { partId ->
                     if (partId != document.activePart.id) {
                         document = document.selectPart(partId)
                         selectedEvent = -1
@@ -529,7 +540,7 @@ private fun stringLabel(part: TabPart, stringIndex: Int, naming: ChordNamingSyst
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, phoneLayout: Boolean, openControlsRequest: Int, globalControls: @Composable () -> Unit, onSelectPart: (String) -> Unit, onAddPart: (TabInstrumentPreset) -> Unit, onSetPartProgram: (Int) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
+private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, upcomingNoteZoomEnabled: Boolean, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, phoneLayout: Boolean, openControlsRequest: Int, globalControls: @Composable () -> Unit, onSelectPart: (String) -> Unit, onAddPart: (TabInstrumentPreset) -> Unit, onSetPartProgram: (Int) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
     val textMeasurer = rememberTextMeasurer()
     var dragTargetString by remember { mutableIntStateOf(-1) }
     var dragTargetFret by remember { mutableIntStateOf(-1) }
@@ -581,6 +592,22 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
     var durationPreview by remember { mutableStateOf<Pair<NotePosition, Int>?>(null) }
     val editorFocusRequester = remember { FocusRequester() }
     val staffScrollState = rememberScrollState()
+    val anticipationGlow = remember { Animatable(0f) }
+    val nextPlaybackEventIndex = remember(document.events, playingEventIndex) {
+        if (playingEventIndex < 0) -1 else
+            ((playingEventIndex + 1)..document.events.lastIndex).firstOrNull { index ->
+                val event = document.events[index]
+                event.restDurationUnits == null && event.frets.any { it != null }
+            } ?: -1
+    }
+    LaunchedEffect(playingEventIndex, upcomingNoteZoomEnabled) {
+        if (playingEventIndex >= 0 && upcomingNoteZoomEnabled) {
+            anticipationGlow.snapTo(0.12f)
+            anticipationGlow.animateTo(0.72f, tween(durationMillis = 420))
+        } else {
+            anticipationGlow.snapTo(0f)
+        }
+    }
     val mobileControlsDrawer = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(openControlsRequest) {
@@ -1239,16 +1266,47 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         val action = event.actions.getOrNull(s)
                                         // The notehead circle already delimits the fret; do not add notation parentheses.
                                         val noteLabel = (if (fretPreview) dragTargetFret else fret).toString()
-                                        val radius = 14.dp.toPx()
-                                        val noteFill = when { fretPreview || selected -> selection; dropTarget -> surfaceRaised; chosen -> green; else -> surfaceRaised }
-                                        val noteOutline = when { fretPreview || selected || dropTarget || chosen -> green; else -> line }
-                                        val originAlpha = if (verticalMovePreview) 0.30f else 1f
-                                        drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
-                                        drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (selected || fretPreview) 2.5f else 1.5f))
-                                        if (playingEventIndex == i) {
-                                            drawCircle(highlight, radius = 4.dp.toPx(), center = Offset(x - radius - 5.dp.toPx(), y))
+                                        val isPlaying = playingEventIndex == i
+                                        val isNextToPlay = upcomingNoteZoomEnabled && nextPlaybackEventIndex == i
+                                        val normalRadius = 14.dp.toPx()
+                                        val radius = when {
+                                            isPlaying -> 22.dp.toPx()
+                                            isNextToPlay -> (18f + anticipationGlow.value * 10f).dp.toPx()
+                                            else -> normalRadius
                                         }
-                                        drawText(textMeasurer, noteLabel, Offset(x - if (noteLabel.length > 2) 11.dp.toPx() else 5.dp.toPx(), y - 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = 11.sp, fontWeight = FontWeight.Bold))
+                                        val noteFill = when {
+                                            isPlaying -> highlight
+                                            isNextToPlay -> selection
+                                            fretPreview || selected -> selection
+                                            dropTarget -> surfaceRaised
+                                            chosen -> green
+                                            else -> surfaceRaised
+                                        }
+                                        val noteOutline = when {
+                                            isPlaying || isNextToPlay || fretPreview || selected || dropTarget || chosen -> highlight
+                                            else -> line
+                                        }
+                                        val originAlpha = if (verticalMovePreview) 0.30f else 1f
+                                        if (isPlaying) {
+                                            drawCircle(highlight.copy(alpha = 0.32f), radius = radius + 9.dp.toPx(), center = Offset(x, y))
+                                        } else if (isNextToPlay) {
+                                            drawCircle(highlight.copy(alpha = anticipationGlow.value), radius = radius + 8.dp.toPx(), center = Offset(x, y))
+                                        }
+                                        drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
+                                        drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (isPlaying || selected || fretPreview) 3.dp.toPx() else 1.8.dp.toPx()))
+                                        val labelFontSize = when {
+                                            isPlaying -> 17.sp
+                                            isNextToPlay -> (14f + anticipationGlow.value * 7f).sp
+                                            else -> 11.sp
+                                        }
+                                        val labelHalfWidth = when {
+                                            noteLabel.length > 2 && isPlaying -> 14.dp.toPx()
+                                            noteLabel.length > 2 -> 11.dp.toPx()
+                                            isPlaying -> 6.dp.toPx()
+                                            isNextToPlay -> 8.dp.toPx()
+                                            else -> 5.dp.toPx()
+                                        }
+                                        drawText(textMeasurer, noteLabel, Offset(x - labelHalfWidth, y - if (isPlaying) 11.dp.toPx() else 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = labelFontSize, fontWeight = FontWeight.Bold))
                                         if (verticalMovePreview && dragTargetFret in 0..36) {
                                             val previewY = top + 26.dp.toPx() + rowGap * dragTargetString
                                             val targetEmpty = event.frets.getOrNull(dragTargetString) == null
