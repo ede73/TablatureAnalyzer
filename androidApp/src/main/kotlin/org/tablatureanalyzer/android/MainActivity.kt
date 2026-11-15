@@ -1,5 +1,6 @@
 package org.tablatureanalyzer.android
 
+import android.graphics.Color
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -14,7 +15,7 @@ import org.tablatureanalyzer.app.PlatformPreferences
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        val appChrome = android.graphics.Color.rgb(18, 23, 21)
+        val appChrome = Color.rgb(18, 23, 21)
         window.statusBarColor = appChrome
         window.navigationBarColor = appChrome
         WindowCompat.getInsetsController(window, window.decorView).apply {
