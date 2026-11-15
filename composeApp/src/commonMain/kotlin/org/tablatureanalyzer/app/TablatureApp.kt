@@ -77,6 +77,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
     var selectedEvent by remember { mutableIntStateOf(-1) }
     var selectedString by remember { mutableIntStateOf(-1) }
     var playheadEventIndex by remember { mutableIntStateOf(0) }
+    var playbackResetRequestId by remember { mutableIntStateOf(0) }
     var selectedPlaybackRange by remember { mutableStateOf<IntRange?>(null) }
     var undoHistory by remember { mutableStateOf(emptyList<TabDocument>()) }
     var redoHistory by remember { mutableStateOf(emptyList<TabDocument>()) }
@@ -92,6 +93,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
         document = next
     }
     fun loadDocument(next: TabDocument) {
+        playbackResetRequestId += 1
         document = next
         undoHistory = emptyList()
         redoHistory = emptyList()
@@ -226,7 +228,8 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                             durationEditedEventIndex.takeIf { page == 0 && it >= 0 },
                             durationPreviewRequestId,
                             playheadEventIndex,
-                            selectedPlaybackRange
+                            selectedPlaybackRange,
+                            playbackResetRequestId
                         ) { eventIndex -> playingEventIndex = eventIndex ?: -1 }
                         RadioOption("Next-note zoom", upcomingNoteZoomEnabled) {
                             upcomingNoteZoomEnabled = !upcomingNoteZoomEnabled

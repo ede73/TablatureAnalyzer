@@ -30,7 +30,7 @@ import javax.sound.midi.ShortMessage
 import javax.sound.midi.Track
 
 @Composable
-actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int?, durationPreviewRequestId: Int, playheadEventIndex: Int, selectedPlaybackRange: IntRange?, onPlayingEvent: (Int?) -> Unit) {
+actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int?, durationPreviewRequestId: Int, playheadEventIndex: Int, selectedPlaybackRange: IntRange?, playbackResetRequestId: Int, onPlayingEvent: (Int?) -> Unit) {
     var playbackState by remember { mutableStateOf(PlaybackState.STOPPED) }
     var playbackKind by remember { mutableStateOf(PlaybackKind.FULL_TAB) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -62,6 +62,14 @@ actual fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int
     }
     LaunchedEffect(durationPreviewRequestId) {
         if (durationPreviewRequestId > 0) playDurationContext()
+    }
+    LaunchedEffect(playbackResetRequestId) {
+        if (playbackResetRequestId > 0) {
+            DesktopMidiPlayback.stop()
+            playbackState = PlaybackState.STOPPED
+            playbackKind = PlaybackKind.FULL_TAB
+            eventCallback(null)
+        }
     }
     DisposableEffect(Unit) {
         onDispose {

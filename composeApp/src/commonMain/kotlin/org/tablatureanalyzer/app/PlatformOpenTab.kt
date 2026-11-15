@@ -12,7 +12,7 @@ expect fun PlatformSaveMusicXmlButton(contents: String)
 expect fun PlatformSaveProjectButton(contents: String)
 
 @Composable
-expect fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int?, durationPreviewRequestId: Int, playheadEventIndex: Int, selectedPlaybackRange: IntRange?, onPlayingEvent: (Int?) -> Unit)
+expect fun PlatformMidiPlayerButton(document: TabDocument, replayEventIndex: Int?, durationPreviewRequestId: Int, playheadEventIndex: Int, selectedPlaybackRange: IntRange?, playbackResetRequestId: Int, onPlayingEvent: (Int?) -> Unit)
 
 /** Play a brief preview when a tab note is added or edited. */
 expect fun PlatformAuditionNote(midiPitch: Int)
