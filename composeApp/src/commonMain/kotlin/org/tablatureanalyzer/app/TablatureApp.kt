@@ -951,13 +951,12 @@ private fun EditorPage(
             colors = CardDefaults.cardColors(containerColor = surface),
             shape = RoundedCornerShape(16.dp)
         ) {
-            Column(
-            Modifier.fillMaxWidth()
-                .verticalScroll(staffScrollState)
-                .onGloballyPositioned { staffViewportTopOnScreen = it.positionInRoot().y }
-                .padding(if (document.events.isEmpty()) 10.dp else 16.dp)
-            ) {
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.fillMaxSize()) {
+                Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+                        .padding(horizontal = if (document.events.isEmpty()) 10.dp else 16.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     PartSelector(document, onSelectPart, onAddPart, onSetPartProgram)
                     if (!phoneLayout) {
                         NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
@@ -965,536 +964,543 @@ private fun EditorPage(
                     }
                 }
                 Spacer(Modifier.height(if (document.events.isEmpty()) 4.dp else 12.dp))
-                if (document.events.isEmpty()) {
-                    Canvas(
-                            Modifier.fillMaxWidth().height(maxOf(206.dp, 52.dp + 32.dp * (document.tuning.size - 1))).background(paper, RoundedCornerShape(12.dp))
-                                .pointerInput(addNoteMode, markerPlacement, selectedLengthCode, document.tuning) {
+                Column(
+                    Modifier.fillMaxWidth().weight(1f)
+                        .verticalScroll(staffScrollState)
+                        .onGloballyPositioned { staffViewportTopOnScreen = it.positionInRoot().y }
+                        .padding(if (document.events.isEmpty()) 10.dp else 16.dp)
+                ) {
+                    if (document.events.isEmpty()) {
+                        Canvas(
+                                Modifier.fillMaxWidth().height(maxOf(206.dp, 52.dp + 32.dp * (document.tuning.size - 1))).background(paper, RoundedCornerShape(12.dp))
+                                    .pointerInput(addNoteMode, markerPlacement, selectedLengthCode, document.tuning) {
+                                        awaitEachGesture {
+                                            val down = awaitFirstDown(requireUnconsumed = false)
+                                            val string = ((down.position.y - 26.dp.toPx()) / 32.dp.toPx()).roundToInt().coerceIn(0, document.tuning.lastIndex)
+                                            val left = 38.dp.toPx()
+                                            val columnGap = 62.dp.toPx()
+                                            val event = (((down.position.x - left) / columnGap).roundToInt() - 1).coerceAtLeast(0)
+                                            onSetPlaybackStart(event)
+                                            when (markerPlacement) {
+                                                MarkerPlacement.BAR -> {
+                                                    onAddBar(event)
+                                                    selectedBarEvent = event
+                                                    selectedNotes = emptySet()
+                                                    markerPlacement = null
+                                                }
+                                                MarkerPlacement.REPEAT_START -> {
+                                                    onAddRepeatStart(event)
+                                                    selectedBarEvent = event
+                                                    selectedNotes = emptySet()
+                                                    markerPlacement = null
+                                                }
+                                                MarkerPlacement.REPEAT_END -> {
+                                                    onAddRepeatEnd(event)
+                                                    selectedBarEvent = event
+                                                    selectedNotes = emptySet()
+                                                    markerPlacement = null
+                                                }
+                                                null -> if (addNoteMode) {
+                                                    onAdd(event, string, 0, selectedLengthCode)
+                                                    selectedBarEvent = -1
+                                                } else {
+                                                    selectedBarEvent = -1
+                                                    onSelect(-1, -1)
+                                                }
+                                            }
+                                        }
+                                    }
+                            ) {
+                                val rowGap = 32.dp.toPx()
+                                val left = 38.dp.toPx()
+                                document.tuning.forEachIndexed { string, _ ->
+                                    val y = 26.dp.toPx() + rowGap * string
+                                    drawLine(line, Offset(left, y), Offset(size.width - 8.dp.toPx(), y), strokeWidth = 1.4f)
+                                    drawText(textMeasurer, stringLabel(document.activePart, string, naming), Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
+                                }
+                            }
+                    } else {
+                        BoxWithConstraints(
+                            Modifier.fillMaxWidth().onGloballyPositioned {
+                                staffCanvasTopOnScreen = it.positionInRoot().y
+                            }
+                        ) {
+                            val density = LocalDensity.current
+                            val colGapPx = with(density) { 62.dp.toPx() }
+                            val leftPx = with(density) { 38.dp.toPx() }
+                            val columnsPerSystem = ((constraints.maxWidth.toFloat() - leftPx - with(density) { 8.dp.toPx() }) / colGapPx).toInt().coerceAtLeast(1)
+                            val systems = ((document.events.size + columnsPerSystem - 1) / columnsPerSystem).coerceAtLeast(1)
+                            val systemHeight = maxOf(206.dp, 52.dp + 32.dp * (document.tuning.size - 1))
+                            LaunchedEffect(playingEventIndex, columnsPerSystem, systemHeight) {
+                                val activeSystem = if (playingEventIndex < 0) -1 else (playingEventIndex / columnsPerSystem).coerceIn(0, systems - 1)
+                                if (activeSystem < 0) {
+                                    lastFollowedSystem = -1
+                                } else if (activeSystem != lastFollowedSystem) {
+                                    lastFollowedSystem = activeSystem
+                                    val systemHeightPx = with(density) { systemHeight.roundToPx() }
+                                    val currentScroll = staffScrollState.value
+                                    val viewportTop = staffViewportTopOnScreen
+                                    val systemTopOnScreen = staffCanvasTopOnScreen + activeSystem * systemHeightPx
+                                    val systemTopInViewport = systemTopOnScreen - viewportTop
+                                    val systemBottomInViewport = systemTopInViewport + systemHeightPx
+                                    val viewportHeight = staffScrollState.viewportSize.toFloat()
+                                    val bottomClearance = with(density) { 24.dp.roundToPx() }
+                                    val delta = when {
+                                        systemTopInViewport < 0f -> systemTopInViewport
+                                        systemBottomInViewport > viewportHeight -> systemBottomInViewport - viewportHeight + bottomClearance
+                                        else -> 0f
+                                    }
+                                    val target = (currentScroll + delta.roundToInt()).coerceIn(0, staffScrollState.maxValue)
+                                    if (target != currentScroll) staffScrollState.animateScrollTo(target)
+                                }
+                            }
+                            Canvas(Modifier.fillMaxWidth().height(systemHeight * systems)
+                                .focusRequester(editorFocusRequester)
+                                .focusable()
+                                .onKeyEvent { keyEvent ->
+                                    val code = if (keyEvent.type == KeyEventType.KeyDown) when (keyEvent.key) {
+                                        Key.One, Key.NumPad1 -> 1
+                                        Key.Two, Key.NumPad2 -> 3
+                                        Key.Four, Key.NumPad4 -> 5
+                                        Key.Eight, Key.NumPad8 -> 7
+                                        else -> null
+                                    } else null
+                                    if (code != null && selectedNotes.isNotEmpty()) {
+                                        selectedLengthCode = code
+                                        onSetLength(selectedNotes, code)
+                                        true
+                                    } else false
+                                }
+                                .pointerInput(document, columnsPerSystem, addNoteMode, markerPlacement, selectedLengthCode, selectedRestEvent) {
                                     awaitEachGesture {
-                                        val down = awaitFirstDown(requireUnconsumed = false)
-                                        val string = ((down.position.y - 26.dp.toPx()) / 32.dp.toPx()).roundToInt().coerceIn(0, document.tuning.lastIndex)
-                                        val left = 38.dp.toPx()
-                                        val columnGap = 62.dp.toPx()
-                                        val event = (((down.position.x - left) / columnGap).roundToInt() - 1).coerceAtLeast(0)
-                                        onSetPlaybackStart(event)
-                                        when (markerPlacement) {
-                                            MarkerPlacement.BAR -> {
-                                                onAddBar(event)
-                                                selectedBarEvent = event
-                                                selectedNotes = emptySet()
-                                                markerPlacement = null
-                                            }
-                                            MarkerPlacement.REPEAT_START -> {
-                                                onAddRepeatStart(event)
-                                                selectedBarEvent = event
-                                                selectedNotes = emptySet()
-                                                markerPlacement = null
-                                            }
-                                            MarkerPlacement.REPEAT_END -> {
-                                                onAddRepeatEnd(event)
-                                                selectedBarEvent = event
-                                                selectedNotes = emptySet()
-                                                markerPlacement = null
-                                            }
-                                            null -> if (addNoteMode) {
-                                                onAdd(event, string, 0, selectedLengthCode)
+                                        var downEvent = awaitPointerEvent()
+                                        while (downEvent.changes.none { it.pressed }) downEvent = awaitPointerEvent()
+                                        val down = downEvent.changes.first { it.pressed }
+                                        val system = (down.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
+                                        val localColumn = ((down.position.x - leftPx) / colGapPx).roundToInt() - 1
+                                        val rawEvent = system * columnsPerSystem + localColumn
+                                        val startEvent = if (addNoteMode || markerPlacement != null) rawEvent.coerceAtLeast(0) else rawEvent.coerceIn(0, document.events.lastIndex.coerceAtLeast(0))
+                                        val localY = down.position.y - system * systemHeight.toPx()
+                                        val startString = ((localY - 26.dp.toPx()) / (32.dp.toPx())).roundToInt().coerceIn(0, document.tuning.lastIndex)
+                                        if (downEvent.buttons.isSecondaryPressed) {
+                                            val hit = nearestNoteAt(document, down.position, systemHeight.toPx(), leftPx, colGapPx, columnsPerSystem, 26.dp.toPx(), 32.dp.toPx(), 22.dp.toPx())
+                                            if (hit != null) {
                                                 selectedBarEvent = -1
+                                                selectedNotes = setOf(hit)
+                                                onSelect(hit.eventIndex, hit.stringIndex)
+                                                editorFocusRequester.requestFocus()
+                                                var dragged = false
+                                                var previewCode = currentLengthCode(document, hit)
+                                                val currentIndex = DURATION_DRAG_CODES.indexOf(previewCode).coerceAtLeast(0)
+                                                val stepPx = 36.dp.toPx()
+                                                drag(down.id) { change ->
+                                                    val deltaX = change.position.x - down.position.x
+                                                    if (kotlin.math.abs(deltaX) > viewConfiguration.touchSlop) dragged = true
+                                                    if (dragged) {
+                                                        val step = (deltaX / stepPx).toInt()
+                                                        previewCode = DURATION_DRAG_CODES[(currentIndex + step).coerceIn(DURATION_DRAG_CODES.indices)]
+                                                        durationPreview = hit to previewCode
+                                                        change.consume()
+                                                    }
+                                                }
+                                                if (dragged) {
+                                                    selectedLengthCode = previewCode
+                                                    onSetLength(setOf(hit), previewCode)
+                                                } else {
+                                                    durationMenuTargets = setOf(hit)
+                                                    selectedLengthCode = previewCode
+                                                    showLengthMenu = true
+                                                }
+                                                durationPreview = null
+                                            }
+                                            return@awaitEachGesture
+                                        }
+                                        editorFocusRequester.requestFocus()
+                                        onSetPlaybackStart(startEvent)
+                                        markerPlacement?.let { placement ->
+                                            when (placement) {
+                                                MarkerPlacement.BAR -> onAddBar(startEvent)
+                                                MarkerPlacement.REPEAT_START -> onAddRepeatStart(startEvent)
+                                                MarkerPlacement.REPEAT_END -> onAddRepeatEnd(startEvent)
+                                            }
+                                            selectedBarEvent = startEvent
+                                            selectedRestEvent = -1
+                                            selectedNotes = emptySet()
+                                            onSelect(-1, -1)
+                                            markerPlacement = null
+                                            return@awaitEachGesture
+                                        }
+                                        val clickedRestEvent = document.events.indices.firstOrNull { eventIndex ->
+                                            val event = document.events[eventIndex]
+                                            if (event.restDurationUnits == null) return@firstOrNull false
+                                            val eventSystem = eventIndex / columnsPerSystem
+                                            val local = eventIndex % columnsPerSystem
+                                            val x = leftPx + colGapPx * (local + 1)
+                                            val y = eventSystem * systemHeight.toPx() + 26.dp.toPx() + 32.dp.toPx() * ((document.tuning.size - 1) / 2f)
+                                            kotlin.math.abs(down.position.x - x) <= 18.dp.toPx() && kotlin.math.abs(down.position.y - y) <= 24.dp.toPx()
+                                        }
+                                        if (clickedRestEvent != null) {
+                                            selectedRestEvent = if (selectedRestEvent == clickedRestEvent) -1 else clickedRestEvent
+                                            if (selectedRestEvent >= 0) {
+                                                selectedLengthCode = document.events[selectedRestEvent].restDurationUnits
+                                                    ?.let { lengthCodeForUnits(it, document.divisions) } ?: 5
+                                            }
+                                            selectedNotes = emptySet()
+                                            selectedBarEvent = -1
+                                            onSelect(-1, -1)
+                                            down.consume()
+                                            return@awaitEachGesture
+                                        }
+                                        selectedRestEvent = -1
+                                        val clickedRepeatStart = document.events.indices.firstOrNull { eventIndex ->
+                                            val event = document.events[eventIndex]
+                                            if (!event.repeatStartBefore) false else {
+                                                val local = eventIndex % columnsPerSystem
+                                                val x = leftPx + colGapPx * (local + 1) - colGapPx / 2
+                                                val localClickY = down.position.y - (eventIndex / columnsPerSystem) * systemHeight.toPx()
+                                                val lineBottom = minOf(214.dp.toPx(), systemHeight.toPx() - 4.dp.toPx())
+                                                kotlin.math.abs(down.position.x - x) <= 12.dp.toPx() && localClickY in 8.dp.toPx()..lineBottom
+                                            }
+                                        }
+                                        val clickedBar = clickedRepeatStart ?: document.events.indices.firstOrNull { eventIndex ->
+                                            val event = document.events[eventIndex]
+                                            val eventSystem = eventIndex / columnsPerSystem
+                                            val local = eventIndex % columnsPerSystem
+                                            val x = leftPx + colGapPx * (local + 1)
+                                            val localClickY = down.position.y - eventSystem * systemHeight.toPx()
+                                            val lineBottom = minOf(214.dp.toPx(), systemHeight.toPx() - 4.dp.toPx())
+                                            val withinLine = localClickY in 8.dp.toPx()..lineBottom
+                                            val onEnd = (event.barAfter || event.repeatEndAfter) && kotlin.math.abs(down.position.x - (x + colGapPx / 2)) <= 12.dp.toPx()
+                                            withinLine && onEnd
+                                        }
+                                        if (clickedBar != null) {
+                                            if (selectedBarEvent == clickedBar) {
+                                                selectedBarEvent = -1
+                                                selectedNotes = emptySet()
+                                                onSelect(-1, -1)
+                                                return@awaitEachGesture
+                                            }
+                                            selectedBarEvent = clickedBar
+                                            selectedNotes = emptySet()
+                                            onSelect(-1, -1)
+                                            var destinationEvent = clickedBar
+                                            val pastSlop = awaitTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
+                                            if (pastSlop != null) {
+                                                drag(down.id) { change ->
+                                                    val targetSystem = (change.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
+                                                    val targetLocal = ((change.position.x - leftPx) / colGapPx - 1.5f).roundToInt().coerceIn(0, columnsPerSystem - 1)
+                                                    destinationEvent = (targetSystem * columnsPerSystem + targetLocal).coerceIn(0, document.events.lastIndex)
+                                                    change.consume()
+                                                }
+                                                if (onMoveBar(clickedBar, destinationEvent)) selectedBarEvent = destinationEvent
+                                            }
+                                            return@awaitEachGesture
+                                        }
+                                        val hasNote = document.events.getOrNull(startEvent)?.let { it.restDurationUnits == null && it.frets.getOrNull(startString) != null } == true
+                                        heldNote = NotePosition(startEvent, startString).takeIf { hasNote }
+                                        var draggingNote = false
+                                        var selectingRectangle = false
+                                        var rectangleEnd = down.position
+                                        var noteDragDelta = Offset.Zero
+                                        val pastSlop = awaitTouchSlopOrCancellation(down.id) { change, _ ->
+                                            if (hasNote) {
+                                                draggingNote = true
+                                                onSelect(startEvent, startString)
+                                                // The first movement that crosses touch slop may also be the
+                                                // release position (common for a short desktop drag). Keep it.
+                                                noteDragDelta = change.position - down.position
+                                                val targetSystem = (change.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
+                                                val targetLocalY = change.position.y - targetSystem * systemHeight.toPx()
+                                                val horizontalDrag = kotlin.math.abs(noteDragDelta.x) > kotlin.math.abs(noteDragDelta.y)
+                                                dragTargetString = if (!horizontalDrag) {
+                                                    ((targetLocalY - 26.dp.toPx()) / 32.dp.toPx()).roundToInt().coerceIn(0, document.tuning.lastIndex)
+                                                } else startString
+                                                val originalFret = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString)
+                                                val fretDelta = (noteDragDelta.x / 20.dp.toPx()).roundToInt()
+                                                dragTargetFret = when {
+                                                    originalFret == null -> -1
+                                                    horizontalDrag -> (originalFret + fretDelta).coerceIn(0, 36)
+                                                    dragTargetString in document.tuning.indices -> originalFret + document.tuning[startString] - document.tuning[dragTargetString]
+                                                    else -> -1
+                                                }
+                                            } else {
+                                                selectingRectangle = true
+                                                selectionRect = Rect(
+                                                    minOf(down.position.x, change.position.x), minOf(down.position.y, change.position.y),
+                                                    maxOf(down.position.x, change.position.x), maxOf(down.position.y, change.position.y)
+                                                )
+                                            }
+                                            change.consume()
+                                        }
+                                        if (pastSlop == null) {
+                                            if (addNoteMode && !hasNote) {
+                                                onAdd(startEvent, startString, 0, selectedLengthCode)
+                                                selectedNotes = setOf(NotePosition(startEvent, startString))
+                                                selectedRestEvent = -1
+                                                selectedBarEvent = -1
+                                            } else if (hasNote && !draggingNote) {
+                                                selectedBarEvent = -1
+                                                onSelect(startEvent, startString)
+                                                selectedNotes = setOf(NotePosition(startEvent, startString))
+                                                editorFocusRequester.requestFocus()
                                             } else {
                                                 selectedBarEvent = -1
                                                 onSelect(-1, -1)
+                                                selectedNotes = emptySet()
                                             }
-                                        }
-                                    }
-                                }
-                        ) {
-                            val rowGap = 32.dp.toPx()
-                            val left = 38.dp.toPx()
-                            document.tuning.forEachIndexed { string, _ ->
-                                val y = 26.dp.toPx() + rowGap * string
-                                drawLine(line, Offset(left, y), Offset(size.width - 8.dp.toPx(), y), strokeWidth = 1.4f)
-                                drawText(textMeasurer, stringLabel(document.activePart, string, naming), Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
-                            }
-                        }
-                } else {
-                    BoxWithConstraints(
-                        Modifier.fillMaxWidth().onGloballyPositioned {
-                            staffCanvasTopOnScreen = it.positionInRoot().y
-                        }
-                    ) {
-                        val density = LocalDensity.current
-                        val colGapPx = with(density) { 62.dp.toPx() }
-                        val leftPx = with(density) { 38.dp.toPx() }
-                        val columnsPerSystem = ((constraints.maxWidth.toFloat() - leftPx - with(density) { 8.dp.toPx() }) / colGapPx).toInt().coerceAtLeast(1)
-                        val systems = ((document.events.size + columnsPerSystem - 1) / columnsPerSystem).coerceAtLeast(1)
-                        val systemHeight = maxOf(206.dp, 52.dp + 32.dp * (document.tuning.size - 1))
-                        LaunchedEffect(playingEventIndex, columnsPerSystem, systemHeight) {
-                            val activeSystem = if (playingEventIndex < 0) -1 else (playingEventIndex / columnsPerSystem).coerceIn(0, systems - 1)
-                            if (activeSystem < 0) {
-                                lastFollowedSystem = -1
-                            } else if (activeSystem != lastFollowedSystem) {
-                                lastFollowedSystem = activeSystem
-                                val systemHeightPx = with(density) { systemHeight.roundToPx() }
-                                val currentScroll = staffScrollState.value
-                                val viewportTop = staffViewportTopOnScreen
-                                val systemTopOnScreen = staffCanvasTopOnScreen + activeSystem * systemHeightPx
-                                val systemTopInViewport = systemTopOnScreen - viewportTop
-                                val systemBottomInViewport = systemTopInViewport + systemHeightPx
-                                val viewportHeight = staffScrollState.viewportSize.toFloat()
-                                val bottomClearance = with(density) { 24.dp.roundToPx() }
-                                val delta = when {
-                                    systemTopInViewport < 0f -> systemTopInViewport
-                                    systemBottomInViewport > viewportHeight -> systemBottomInViewport - viewportHeight + bottomClearance
-                                    else -> 0f
-                                }
-                                val target = (currentScroll + delta.roundToInt()).coerceIn(0, staffScrollState.maxValue)
-                                if (target != currentScroll) staffScrollState.animateScrollTo(target)
-                            }
-                        }
-                        Canvas(Modifier.fillMaxWidth().height(systemHeight * systems)
-                            .focusRequester(editorFocusRequester)
-                            .focusable()
-                            .onKeyEvent { keyEvent ->
-                                val code = if (keyEvent.type == KeyEventType.KeyDown) when (keyEvent.key) {
-                                    Key.One, Key.NumPad1 -> 1
-                                    Key.Two, Key.NumPad2 -> 3
-                                    Key.Four, Key.NumPad4 -> 5
-                                    Key.Eight, Key.NumPad8 -> 7
-                                    else -> null
-                                } else null
-                                if (code != null && selectedNotes.isNotEmpty()) {
-                                    selectedLengthCode = code
-                                    onSetLength(selectedNotes, code)
-                                    true
-                                } else false
-                            }
-                            .pointerInput(document, columnsPerSystem, addNoteMode, markerPlacement, selectedLengthCode, selectedRestEvent) {
-                                awaitEachGesture {
-                                    var downEvent = awaitPointerEvent()
-                                    while (downEvent.changes.none { it.pressed }) downEvent = awaitPointerEvent()
-                                    val down = downEvent.changes.first { it.pressed }
-                                    val system = (down.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
-                                    val localColumn = ((down.position.x - leftPx) / colGapPx).roundToInt() - 1
-                                    val rawEvent = system * columnsPerSystem + localColumn
-                                    val startEvent = if (addNoteMode || markerPlacement != null) rawEvent.coerceAtLeast(0) else rawEvent.coerceIn(0, document.events.lastIndex.coerceAtLeast(0))
-                                    val localY = down.position.y - system * systemHeight.toPx()
-                                    val startString = ((localY - 26.dp.toPx()) / (32.dp.toPx())).roundToInt().coerceIn(0, document.tuning.lastIndex)
-                                    if (downEvent.buttons.isSecondaryPressed) {
-                                        val hit = nearestNoteAt(document, down.position, systemHeight.toPx(), leftPx, colGapPx, columnsPerSystem, 26.dp.toPx(), 32.dp.toPx(), 22.dp.toPx())
-                                        if (hit != null) {
-                                            selectedBarEvent = -1
-                                            selectedNotes = setOf(hit)
-                                            onSelect(hit.eventIndex, hit.stringIndex)
-                                            editorFocusRequester.requestFocus()
-                                            var dragged = false
-                                            var previewCode = currentLengthCode(document, hit)
-                                            val currentIndex = DURATION_DRAG_CODES.indexOf(previewCode).coerceAtLeast(0)
-                                            val stepPx = 36.dp.toPx()
+                                        } else if (draggingNote) {
                                             drag(down.id) { change ->
-                                                val deltaX = change.position.x - down.position.x
-                                                if (kotlin.math.abs(deltaX) > viewConfiguration.touchSlop) dragged = true
-                                                if (dragged) {
-                                                    val step = (deltaX / stepPx).toInt()
-                                                    previewCode = DURATION_DRAG_CODES[(currentIndex + step).coerceIn(DURATION_DRAG_CODES.indices)]
-                                                    durationPreview = hit to previewCode
-                                                    change.consume()
-                                                }
-                                            }
-                                            if (dragged) {
-                                                selectedLengthCode = previewCode
-                                                onSetLength(setOf(hit), previewCode)
-                                            } else {
-                                                durationMenuTargets = setOf(hit)
-                                                selectedLengthCode = previewCode
-                                                showLengthMenu = true
-                                            }
-                                            durationPreview = null
-                                        }
-                                        return@awaitEachGesture
-                                    }
-                                    editorFocusRequester.requestFocus()
-                                    onSetPlaybackStart(startEvent)
-                                    markerPlacement?.let { placement ->
-                                        when (placement) {
-                                            MarkerPlacement.BAR -> onAddBar(startEvent)
-                                            MarkerPlacement.REPEAT_START -> onAddRepeatStart(startEvent)
-                                            MarkerPlacement.REPEAT_END -> onAddRepeatEnd(startEvent)
-                                        }
-                                        selectedBarEvent = startEvent
-                                        selectedRestEvent = -1
-                                        selectedNotes = emptySet()
-                                        onSelect(-1, -1)
-                                        markerPlacement = null
-                                        return@awaitEachGesture
-                                    }
-                                    val clickedRestEvent = document.events.indices.firstOrNull { eventIndex ->
-                                        val event = document.events[eventIndex]
-                                        if (event.restDurationUnits == null) return@firstOrNull false
-                                        val eventSystem = eventIndex / columnsPerSystem
-                                        val local = eventIndex % columnsPerSystem
-                                        val x = leftPx + colGapPx * (local + 1)
-                                        val y = eventSystem * systemHeight.toPx() + 26.dp.toPx() + 32.dp.toPx() * ((document.tuning.size - 1) / 2f)
-                                        kotlin.math.abs(down.position.x - x) <= 18.dp.toPx() && kotlin.math.abs(down.position.y - y) <= 24.dp.toPx()
-                                    }
-                                    if (clickedRestEvent != null) {
-                                        selectedRestEvent = if (selectedRestEvent == clickedRestEvent) -1 else clickedRestEvent
-                                        if (selectedRestEvent >= 0) {
-                                            selectedLengthCode = document.events[selectedRestEvent].restDurationUnits
-                                                ?.let { lengthCodeForUnits(it, document.divisions) } ?: 5
-                                        }
-                                        selectedNotes = emptySet()
-                                        selectedBarEvent = -1
-                                        onSelect(-1, -1)
-                                        down.consume()
-                                        return@awaitEachGesture
-                                    }
-                                    selectedRestEvent = -1
-                                    val clickedRepeatStart = document.events.indices.firstOrNull { eventIndex ->
-                                        val event = document.events[eventIndex]
-                                        if (!event.repeatStartBefore) false else {
-                                            val local = eventIndex % columnsPerSystem
-                                            val x = leftPx + colGapPx * (local + 1) - colGapPx / 2
-                                            val localClickY = down.position.y - (eventIndex / columnsPerSystem) * systemHeight.toPx()
-                                            val lineBottom = minOf(214.dp.toPx(), systemHeight.toPx() - 4.dp.toPx())
-                                            kotlin.math.abs(down.position.x - x) <= 12.dp.toPx() && localClickY in 8.dp.toPx()..lineBottom
-                                        }
-                                    }
-                                    val clickedBar = clickedRepeatStart ?: document.events.indices.firstOrNull { eventIndex ->
-                                        val event = document.events[eventIndex]
-                                        val eventSystem = eventIndex / columnsPerSystem
-                                        val local = eventIndex % columnsPerSystem
-                                        val x = leftPx + colGapPx * (local + 1)
-                                        val localClickY = down.position.y - eventSystem * systemHeight.toPx()
-                                        val lineBottom = minOf(214.dp.toPx(), systemHeight.toPx() - 4.dp.toPx())
-                                        val withinLine = localClickY in 8.dp.toPx()..lineBottom
-                                        val onEnd = (event.barAfter || event.repeatEndAfter) && kotlin.math.abs(down.position.x - (x + colGapPx / 2)) <= 12.dp.toPx()
-                                        withinLine && onEnd
-                                    }
-                                    if (clickedBar != null) {
-                                        if (selectedBarEvent == clickedBar) {
-                                            selectedBarEvent = -1
-                                            selectedNotes = emptySet()
-                                            onSelect(-1, -1)
-                                            return@awaitEachGesture
-                                        }
-                                        selectedBarEvent = clickedBar
-                                        selectedNotes = emptySet()
-                                        onSelect(-1, -1)
-                                        var destinationEvent = clickedBar
-                                        val pastSlop = awaitTouchSlopOrCancellation(down.id) { change, _ -> change.consume() }
-                                        if (pastSlop != null) {
-                                            drag(down.id) { change ->
+                                                noteDragDelta = change.position - down.position
                                                 val targetSystem = (change.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
-                                                val targetLocal = ((change.position.x - leftPx) / colGapPx - 1.5f).roundToInt().coerceIn(0, columnsPerSystem - 1)
-                                                destinationEvent = (targetSystem * columnsPerSystem + targetLocal).coerceIn(0, document.events.lastIndex)
+                                                val targetLocalY = change.position.y - targetSystem * systemHeight.toPx()
+                                                val target = ((targetLocalY - 26.dp.toPx()) / 32.dp.toPx()).roundToInt().coerceIn(0, document.tuning.lastIndex)
+                                                val horizontalDrag = kotlin.math.abs(noteDragDelta.x) > kotlin.math.abs(noteDragDelta.y)
+                                                dragTargetString = if (horizontalDrag) startString else target
+                                                val originalFret = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString)
+                                                val fretDelta = (noteDragDelta.x / 20.dp.toPx()).roundToInt()
+                                                dragTargetFret = when {
+                                                    originalFret == null -> -1
+                                                    horizontalDrag -> (originalFret + fretDelta).coerceIn(0, 36)
+                                                    dragTargetString in document.tuning.indices -> originalFret + document.tuning[startString] - document.tuning[dragTargetString]
+                                                    else -> -1
+                                                }
                                                 change.consume()
                                             }
-                                            if (onMoveBar(clickedBar, destinationEvent)) selectedBarEvent = destinationEvent
-                                        }
-                                        return@awaitEachGesture
-                                    }
-                                    val hasNote = document.events.getOrNull(startEvent)?.let { it.restDurationUnits == null && it.frets.getOrNull(startString) != null } == true
-                                    heldNote = NotePosition(startEvent, startString).takeIf { hasNote }
-                                    var draggingNote = false
-                                    var selectingRectangle = false
-                                    var rectangleEnd = down.position
-                                    var noteDragDelta = Offset.Zero
-                                    val pastSlop = awaitTouchSlopOrCancellation(down.id) { change, _ ->
-                                        if (hasNote) {
-                                            draggingNote = true
-                                            onSelect(startEvent, startString)
-                                            // The first movement that crosses touch slop may also be the
-                                            // release position (common for a short desktop drag). Keep it.
-                                            noteDragDelta = change.position - down.position
-                                            val targetSystem = (change.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
-                                            val targetLocalY = change.position.y - targetSystem * systemHeight.toPx()
-                                            val horizontalDrag = kotlin.math.abs(noteDragDelta.x) > kotlin.math.abs(noteDragDelta.y)
-                                            dragTargetString = if (!horizontalDrag) {
-                                                ((targetLocalY - 26.dp.toPx()) / 32.dp.toPx()).roundToInt().coerceIn(0, document.tuning.lastIndex)
-                                            } else startString
-                                            val originalFret = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString)
-                                            val fretDelta = (noteDragDelta.x / 20.dp.toPx()).roundToInt()
-                                            dragTargetFret = when {
-                                                originalFret == null -> -1
-                                                horizontalDrag -> (originalFret + fretDelta).coerceIn(0, 36)
-                                                dragTargetString in document.tuning.indices -> originalFret + document.tuning[startString] - document.tuning[dragTargetString]
-                                                else -> -1
-                                            }
-                                        } else {
-                                            selectingRectangle = true
-                                            selectionRect = Rect(
-                                                minOf(down.position.x, change.position.x), minOf(down.position.y, change.position.y),
-                                                maxOf(down.position.x, change.position.x), maxOf(down.position.y, change.position.y)
-                                            )
-                                        }
-                                        change.consume()
-                                    }
-                                    if (pastSlop == null) {
-                                        if (addNoteMode && !hasNote) {
-                                            onAdd(startEvent, startString, 0, selectedLengthCode)
-                                            selectedNotes = setOf(NotePosition(startEvent, startString))
-                                            selectedRestEvent = -1
-                                            selectedBarEvent = -1
-                                        } else if (hasNote && !draggingNote) {
-                                            selectedBarEvent = -1
-                                            onSelect(startEvent, startString)
-                                            selectedNotes = setOf(NotePosition(startEvent, startString))
-                                            editorFocusRequester.requestFocus()
-                                        } else {
-                                            selectedBarEvent = -1
-                                            onSelect(-1, -1)
-                                            selectedNotes = emptySet()
-                                        }
-                                    } else if (draggingNote) {
-                                        drag(down.id) { change ->
-                                            noteDragDelta = change.position - down.position
-                                            val targetSystem = (change.position.y / systemHeight.toPx()).toInt().coerceIn(0, systems - 1)
-                                            val targetLocalY = change.position.y - targetSystem * systemHeight.toPx()
-                                            val target = ((targetLocalY - 26.dp.toPx()) / 32.dp.toPx()).roundToInt().coerceIn(0, document.tuning.lastIndex)
-                                            val horizontalDrag = kotlin.math.abs(noteDragDelta.x) > kotlin.math.abs(noteDragDelta.y)
-                                            dragTargetString = if (horizontalDrag) startString else target
-                                            val originalFret = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString)
-                                            val fretDelta = (noteDragDelta.x / 20.dp.toPx()).roundToInt()
-                                            dragTargetFret = when {
-                                                originalFret == null -> -1
-                                                horizontalDrag -> (originalFret + fretDelta).coerceIn(0, 36)
-                                                dragTargetString in document.tuning.indices -> originalFret + document.tuning[startString] - document.tuning[dragTargetString]
-                                                else -> -1
-                                            }
-                                            change.consume()
-                                        }
-                                        if (kotlin.math.abs(noteDragDelta.x) > kotlin.math.abs(noteDragDelta.y)) {
-                                            val originalFret = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString)
-                                            if (originalFret != null && dragTargetFret >= 0 && dragTargetFret != originalFret) onSetFret(startEvent, startString, dragTargetFret)
-                                            selectedNotes = setOf(NotePosition(startEvent, startString))
-                                        } else {
-                                            val target = dragTargetString
-                                            if (target in document.tuning.indices && target != startString) {
-                                                onMove(startEvent, startString, target)
-                                                selectedNotes = setOf(NotePosition(startEvent, target))
-                                            } else {
+                                            if (kotlin.math.abs(noteDragDelta.x) > kotlin.math.abs(noteDragDelta.y)) {
+                                                val originalFret = document.events.getOrNull(startEvent)?.frets?.getOrNull(startString)
+                                                if (originalFret != null && dragTargetFret >= 0 && dragTargetFret != originalFret) onSetFret(startEvent, startString, dragTargetFret)
                                                 selectedNotes = setOf(NotePosition(startEvent, startString))
+                                            } else {
+                                                val target = dragTargetString
+                                                if (target in document.tuning.indices && target != startString) {
+                                                    onMove(startEvent, startString, target)
+                                                    selectedNotes = setOf(NotePosition(startEvent, target))
+                                                } else {
+                                                    selectedNotes = setOf(NotePosition(startEvent, startString))
+                                                }
                                             }
+                                            dragTargetString = -1
+                                            dragTargetFret = -1
+                                        } else if (selectingRectangle) {
+                                            drag(down.id) { change ->
+                                                rectangleEnd = change.position
+                                                selectionRect = Rect(
+                                                    minOf(down.position.x, rectangleEnd.x), minOf(down.position.y, rectangleEnd.y),
+                                                    maxOf(down.position.x, rectangleEnd.x), maxOf(down.position.y, rectangleEnd.y)
+                                                )
+                                                change.consume()
+                                            }
+                                            val rect = selectionRect
+                                            if (rect != null) {
+                                                val added = document.events.flatMapIndexed { eventIndex, event ->
+                                                    if (event.restDurationUnits != null) return@flatMapIndexed emptyList()
+                                                    val eventSystem = eventIndex / columnsPerSystem
+                                                    val local = eventIndex % columnsPerSystem
+                                                    val x = leftPx + colGapPx * (local + 1)
+                                                    event.frets.mapIndexedNotNull { stringIndex, fret ->
+                                                        if (fret == null) null else {
+                                                            val y = eventSystem * systemHeight.toPx() + 26.dp.toPx() + 32.dp.toPx() * stringIndex
+                                                            NotePosition(eventIndex, stringIndex).takeIf { x in rect.left..rect.right && y in rect.top..rect.bottom }
+                                                        }
+                                                    }
+                                                }.toSet()
+                                                selectedNotes = selectedNotes + added
+                                            }
+                                            selectionRect = null
                                         }
-                                        dragTargetString = -1
-                                        dragTargetFret = -1
-                                    } else if (selectingRectangle) {
-                                        drag(down.id) { change ->
-                                            rectangleEnd = change.position
-                                            selectionRect = Rect(
-                                                minOf(down.position.x, rectangleEnd.x), minOf(down.position.y, rectangleEnd.y),
-                                                maxOf(down.position.x, rectangleEnd.x), maxOf(down.position.y, rectangleEnd.y)
+                                        heldNote = null
+                                    }
+                                }) {
+                                val systemHeightPx = systemHeight.toPx()
+                                val rowGap = 32.dp.toPx()
+                                val left = leftPx
+                                repeat(systems) { system ->
+                                    val top = system * systemHeightPx
+                                    if (system > 0) drawLine(muted.copy(alpha = 0.22f), Offset(0f, top), Offset(size.width, top), 1f)
+                                    for (s in document.tuning.indices) {
+                                        val y = top + 26.dp.toPx() + rowGap * s
+                                        drawLine(line, Offset(left, y), Offset(size.width - 8.dp.toPx(), y), strokeWidth = 1.4f)
+                                        drawText(textMeasurer, stringLabel(document.activePart, s, naming), Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
+                                    }
+                                }
+                                document.events.forEachIndexed { i, event ->
+                                    val system = i / columnsPerSystem
+                                    val local = i % columnsPerSystem
+                                    val top = system * systemHeightPx
+                                    val x = left + colGapPx * (local + 1)
+                                    if (playheadEventIndex == i) {
+                                        val cursorTop = top + 12.dp.toPx()
+                                        val cursorBottom = top + minOf(214.dp.toPx(), systemHeightPx - 4.dp.toPx())
+                                        var dashY = cursorTop
+                                        while (dashY < cursorBottom) {
+                                            drawLine(highlight.copy(alpha = 0.82f), Offset(x, dashY), Offset(x, minOf(dashY + 5.dp.toPx(), cursorBottom)), strokeWidth = 1.5.dp.toPx())
+                                            dashY += 9.dp.toPx()
+                                        }
+                                        val cursorTip = Path().apply {
+                                            moveTo(x - 4.dp.toPx(), top + 5.dp.toPx())
+                                            lineTo(x + 4.dp.toPx(), top + 5.dp.toPx())
+                                            lineTo(x, top + 11.dp.toPx())
+                                            close()
+                                        }
+                                        drawPath(cursorTip, highlight)
+                                    }
+                                    if (event.repeatStartBefore) {
+                                        val repeatX = x - colGapPx / 2
+                                        val repeatColor = if (i == selectedBarEvent) highlight else green
+                                        val barBottom = minOf(214.dp.toPx(), systemHeightPx - 4.dp.toPx())
+                                        drawLine(repeatColor, Offset(repeatX, top + 8.dp.toPx()), Offset(repeatX, top + barBottom), 3.5f)
+                                        drawLine(repeatColor.copy(alpha = 0.75f), Offset(repeatX + 4.dp.toPx(), top + 8.dp.toPx()), Offset(repeatX + 4.dp.toPx(), top + barBottom), 1.5f)
+                                        val dotY = top + 26.dp.toPx() + rowGap * ((document.tuning.size - 1) / 2f)
+                                        drawCircle(repeatColor, 2.2.dp.toPx(), Offset(repeatX + 8.dp.toPx(), dotY - 4.dp.toPx()))
+                                        drawCircle(repeatColor, 2.2.dp.toPx(), Offset(repeatX + 8.dp.toPx(), dotY + 4.dp.toPx()))
+                                    }
+                                    if (event.barAfter) {
+                                        val barColor = if (i == selectedBarEvent) highlight else green
+                                        val barBottom = minOf(214.dp.toPx(), systemHeightPx - 4.dp.toPx())
+                                        val repeatX = x + colGapPx / 2
+                                        if (event.repeatEndAfter) {
+                                            drawLine(barColor.copy(alpha = 0.75f), Offset(repeatX - 4.dp.toPx(), top + 8.dp.toPx()), Offset(repeatX - 4.dp.toPx(), top + barBottom), 1.5f)
+                                        }
+                                        drawLine(barColor, Offset(repeatX, top + 8.dp.toPx()), Offset(repeatX, top + barBottom), if (event.repeatEndAfter || i == selectedBarEvent) 3.5f else 2f)
+                                        if (event.repeatEndAfter) {
+                                            val dotY = top + 26.dp.toPx() + rowGap * ((document.tuning.size - 1) / 2f)
+                                            drawCircle(barColor, 2.2.dp.toPx(), Offset(repeatX - 8.dp.toPx(), dotY - 4.dp.toPx()))
+                                            drawCircle(barColor, 2.2.dp.toPx(), Offset(repeatX - 8.dp.toPx(), dotY + 4.dp.toPx()))
+                                            drawText(textMeasurer, "×${event.repeatCount}", Offset(repeatX - 16.dp.toPx(), top + 2.dp.toPx()), style = TextStyle(color = barColor, fontSize = 9.sp, fontWeight = FontWeight.Bold))
+                                        }
+                                    }
+                                    if (event.restDurationUnits != null) {
+                                        val restCenter = Offset(x, top + 26.dp.toPx() + rowGap * ((document.tuning.size - 1) / 2f))
+                                        val restColor = if (selectedRestEvent == i || playingEventIndex == i) highlight else green
+                                        if (selectedRestEvent == i) {
+                                            drawRoundRect(
+                                                selection.copy(alpha = 0.55f),
+                                                Offset(restCenter.x - 17.dp.toPx(), restCenter.y - 21.dp.toPx()),
+                                                androidx.compose.ui.geometry.Size(34.dp.toPx(), 42.dp.toPx()),
+                                                cornerRadius = androidx.compose.ui.geometry.CornerRadius(7.dp.toPx())
                                             )
-                                            change.consume()
                                         }
-                                        val rect = selectionRect
-                                        if (rect != null) {
-                                            val added = document.events.flatMapIndexed { eventIndex, event ->
-                                                if (event.restDurationUnits != null) return@flatMapIndexed emptyList()
-                                                val eventSystem = eventIndex / columnsPerSystem
-                                                val local = eventIndex % columnsPerSystem
-                                                val x = leftPx + colGapPx * (local + 1)
-                                                event.frets.mapIndexedNotNull { stringIndex, fret ->
-                                                    if (fret == null) null else {
-                                                        val y = eventSystem * systemHeight.toPx() + 26.dp.toPx() + 32.dp.toPx() * stringIndex
-                                                        NotePosition(eventIndex, stringIndex).takeIf { x in rect.left..rect.right && y in rect.top..rect.bottom }
+                                        val restCode = lengthCodeForUnits(event.restDurationUnits, document.divisions) ?: 5
+                                        drawRestGlyph(restCode, restCenter, restColor, 1.7f)
+                                        if (playingEventIndex == i) {
+                                            drawCircle(highlight, radius = 4.dp.toPx(), center = Offset(restCenter.x - 18.dp.toPx(), restCenter.y))
+                                        }
+                                    }
+                                    if (event.restDurationUnits == null) event.frets.forEachIndexed { s, fret ->
+                                        if (fret != null) {
+                                            val y = top + 26.dp.toPx() + rowGap * s
+                                            val selected = NotePosition(i, s) in selectedNotes
+                                            val chosen = i == selectedEvent && s == selectedString
+                                            val dropTarget = i == selectedEvent && s == dragTargetString && dragTargetString != selectedString
+                                            val fretPreview = chosen && dragTargetString == selectedString && dragTargetFret >= 0
+                                            val verticalMovePreview = chosen && dragTargetString in document.tuning.indices && dragTargetString != s
+                                            val action = event.actions.getOrNull(s)
+                                            // The notehead circle already delimits the fret; do not add notation parentheses.
+                                            val noteLabel = (if (fretPreview) dragTargetFret else fret).toString()
+                                            val isPlaying = playingEventIndex == i
+                                            val isNextToPlay = upcomingNoteZoomEnabled && nextPlaybackEventIndex == i
+                                            val normalRadius = 14.dp.toPx()
+                                            val radius = when {
+                                                isPlaying -> 22.dp.toPx()
+                                                isNextToPlay -> (18f + anticipationGlow.value * 10f).dp.toPx()
+                                                else -> normalRadius
+                                            }
+                                            val noteFill = when {
+                                                isPlaying -> highlight
+                                                isNextToPlay -> selection
+                                                fretPreview || selected -> selection
+                                                dropTarget -> surfaceRaised
+                                                chosen -> green
+                                                else -> surfaceRaised
+                                            }
+                                            val noteOutline = when {
+                                                isPlaying || isNextToPlay || fretPreview || selected || dropTarget || chosen -> highlight
+                                                else -> line
+                                            }
+                                            val originAlpha = if (verticalMovePreview) 0.30f else 1f
+                                            if (isPlaying) {
+                                                drawCircle(highlight.copy(alpha = 0.32f), radius = radius + 9.dp.toPx(), center = Offset(x, y))
+                                            } else if (isNextToPlay) {
+                                                drawCircle(highlight.copy(alpha = anticipationGlow.value), radius = radius + 8.dp.toPx(), center = Offset(x, y))
+                                            }
+                                            drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
+                                            drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (isPlaying || selected || fretPreview) 3.dp.toPx() else 1.8.dp.toPx()))
+                                            val labelFontSize = when {
+                                                isPlaying -> 17.sp
+                                                isNextToPlay -> (14f + anticipationGlow.value * 7f).sp
+                                                else -> 11.sp
+                                            }
+                                            val labelHalfWidth = when {
+                                                noteLabel.length > 2 && isPlaying -> 14.dp.toPx()
+                                                noteLabel.length > 2 -> 11.dp.toPx()
+                                                isPlaying -> 6.dp.toPx()
+                                                isNextToPlay -> 8.dp.toPx()
+                                                else -> 5.dp.toPx()
+                                            }
+                                            drawText(textMeasurer, noteLabel, Offset(x - labelHalfWidth, y - if (isPlaying) 11.dp.toPx() else 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = labelFontSize, fontWeight = FontWeight.Bold))
+                                            if (verticalMovePreview && dragTargetFret in 0..36) {
+                                                val previewY = top + 26.dp.toPx() + rowGap * dragTargetString
+                                                val targetEmpty = event.frets.getOrNull(dragTargetString) == null
+                                                val previewFill = if (targetEmpty) selection else surfaceRaised
+                                                drawCircle(previewFill.copy(alpha = 0.94f), radius = radius, center = Offset(x, previewY))
+                                                drawCircle(green, radius = radius, center = Offset(x, previewY), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
+                                                val previewLabel = dragTargetFret.toString()
+                                                drawText(textMeasurer, previewLabel, Offset(x - if (previewLabel.length > 2) 11.dp.toPx() else 5.dp.toPx(), previewY - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 11.sp, fontWeight = FontWeight.Bold))
+                                            }
+                                            if (heldNote == NotePosition(i, s)) {
+                                                drawMoveArrows(Offset(x, y), radius, green)
+                                            }
+                                            if (fretPreview) {
+                                                val previewText = "Fret $dragTargetFret"
+                                                val previewLayout = textMeasurer.measure(previewText, style = TextStyle(color = paper, fontSize = 10.sp, fontWeight = FontWeight.Bold))
+                                                val bubbleWidth = previewLayout.size.width + 12.dp.toPx()
+                                                val bubbleHeight = previewLayout.size.height + 6.dp.toPx()
+                                                val bubbleLeft = (x - bubbleWidth / 2).coerceIn(0f, size.width - bubbleWidth)
+                                                val bubbleTop = (y - radius - bubbleHeight - 5.dp.toPx()).coerceAtLeast(2.dp.toPx())
+                                                drawRoundRect(green, Offset(bubbleLeft, bubbleTop), androidx.compose.ui.geometry.Size(bubbleWidth, bubbleHeight), cornerRadius = androidx.compose.ui.geometry.CornerRadius(5.dp.toPx()))
+                                                drawText(textMeasurer, previewText, Offset(bubbleLeft + 6.dp.toPx(), bubbleTop + 3.dp.toPx()), style = TextStyle(color = paper, fontSize = 10.sp, fontWeight = FontWeight.Bold))
+                                            }
+                                            val shownLength = durationPreview?.takeIf { it.first == NotePosition(i, s) }?.second
+                                                ?: event.lengthCodes.getOrNull(s)
+                                                ?: event.durationUnits.getOrNull(s)?.let { lengthCodeForUnits(it, document.divisions) }
+                                            shownLength?.let { code ->
+                                                drawDurationGlyph(code, Offset(x + radius + 8.dp.toPx(), y - 7.dp.toPx()), green, 1.dp.toPx())
+                                                if (durationPreview?.first == NotePosition(i, s)) {
+                                                    drawText(textMeasurer, durationFraction(code), Offset(x + radius + 8.dp.toPx(), y - 22.dp.toPx()), style = TextStyle(color = green, fontSize = 10.sp, fontWeight = FontWeight.Bold))
+                                                }
+                                            }
+                                            if (action?.lowercaseChar() == 'v') {
+                                                val waveWidth = 28.dp.toPx()
+                                                val waveHeight = 3.dp.toPx()
+                                                val waveY = y - radius - 4.dp.toPx()
+                                                val segment = waveWidth / 3f
+                                                val wave = Path().apply {
+                                                    moveTo(x - waveWidth / 2, waveY)
+                                                    repeat(3) { waveIndex ->
+                                                        val startX = x - waveWidth / 2 + waveIndex * segment
+                                                        cubicTo(startX + segment / 4, waveY - waveHeight, startX + segment * 3 / 4, waveY + waveHeight, startX + segment, waveY)
                                                     }
                                                 }
-                                            }.toSet()
-                                            selectedNotes = selectedNotes + added
-                                        }
-                                        selectionRect = null
-                                    }
-                                    heldNote = null
-                                }
-                            }) {
-                            val systemHeightPx = systemHeight.toPx()
-                            val rowGap = 32.dp.toPx()
-                            val left = leftPx
-                            repeat(systems) { system ->
-                                val top = system * systemHeightPx
-                                if (system > 0) drawLine(muted.copy(alpha = 0.22f), Offset(0f, top), Offset(size.width, top), 1f)
-                                for (s in document.tuning.indices) {
-                                    val y = top + 26.dp.toPx() + rowGap * s
-                                    drawLine(line, Offset(left, y), Offset(size.width - 8.dp.toPx(), y), strokeWidth = 1.4f)
-                                    drawText(textMeasurer, stringLabel(document.activePart, s, naming), Offset(5f, y - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 12.sp))
-                                }
-                            }
-                            document.events.forEachIndexed { i, event ->
-                                val system = i / columnsPerSystem
-                                val local = i % columnsPerSystem
-                                val top = system * systemHeightPx
-                                val x = left + colGapPx * (local + 1)
-                                if (playheadEventIndex == i) {
-                                    val cursorTop = top + 12.dp.toPx()
-                                    val cursorBottom = top + minOf(214.dp.toPx(), systemHeightPx - 4.dp.toPx())
-                                    var dashY = cursorTop
-                                    while (dashY < cursorBottom) {
-                                        drawLine(highlight.copy(alpha = 0.82f), Offset(x, dashY), Offset(x, minOf(dashY + 5.dp.toPx(), cursorBottom)), strokeWidth = 1.5.dp.toPx())
-                                        dashY += 9.dp.toPx()
-                                    }
-                                    val cursorTip = Path().apply {
-                                        moveTo(x - 4.dp.toPx(), top + 5.dp.toPx())
-                                        lineTo(x + 4.dp.toPx(), top + 5.dp.toPx())
-                                        lineTo(x, top + 11.dp.toPx())
-                                        close()
-                                    }
-                                    drawPath(cursorTip, highlight)
-                                }
-                                if (event.repeatStartBefore) {
-                                    val repeatX = x - colGapPx / 2
-                                    val repeatColor = if (i == selectedBarEvent) highlight else green
-                                    val barBottom = minOf(214.dp.toPx(), systemHeightPx - 4.dp.toPx())
-                                    drawLine(repeatColor, Offset(repeatX, top + 8.dp.toPx()), Offset(repeatX, top + barBottom), 3.5f)
-                                    drawLine(repeatColor.copy(alpha = 0.75f), Offset(repeatX + 4.dp.toPx(), top + 8.dp.toPx()), Offset(repeatX + 4.dp.toPx(), top + barBottom), 1.5f)
-                                    val dotY = top + 26.dp.toPx() + rowGap * ((document.tuning.size - 1) / 2f)
-                                    drawCircle(repeatColor, 2.2.dp.toPx(), Offset(repeatX + 8.dp.toPx(), dotY - 4.dp.toPx()))
-                                    drawCircle(repeatColor, 2.2.dp.toPx(), Offset(repeatX + 8.dp.toPx(), dotY + 4.dp.toPx()))
-                                }
-                                if (event.barAfter) {
-                                    val barColor = if (i == selectedBarEvent) highlight else green
-                                    val barBottom = minOf(214.dp.toPx(), systemHeightPx - 4.dp.toPx())
-                                    val repeatX = x + colGapPx / 2
-                                    if (event.repeatEndAfter) {
-                                        drawLine(barColor.copy(alpha = 0.75f), Offset(repeatX - 4.dp.toPx(), top + 8.dp.toPx()), Offset(repeatX - 4.dp.toPx(), top + barBottom), 1.5f)
-                                    }
-                                    drawLine(barColor, Offset(repeatX, top + 8.dp.toPx()), Offset(repeatX, top + barBottom), if (event.repeatEndAfter || i == selectedBarEvent) 3.5f else 2f)
-                                    if (event.repeatEndAfter) {
-                                        val dotY = top + 26.dp.toPx() + rowGap * ((document.tuning.size - 1) / 2f)
-                                        drawCircle(barColor, 2.2.dp.toPx(), Offset(repeatX - 8.dp.toPx(), dotY - 4.dp.toPx()))
-                                        drawCircle(barColor, 2.2.dp.toPx(), Offset(repeatX - 8.dp.toPx(), dotY + 4.dp.toPx()))
-                                        drawText(textMeasurer, "×${event.repeatCount}", Offset(repeatX - 16.dp.toPx(), top + 2.dp.toPx()), style = TextStyle(color = barColor, fontSize = 9.sp, fontWeight = FontWeight.Bold))
-                                    }
-                                }
-                                if (event.restDurationUnits != null) {
-                                    val restCenter = Offset(x, top + 26.dp.toPx() + rowGap * ((document.tuning.size - 1) / 2f))
-                                    val restColor = if (selectedRestEvent == i || playingEventIndex == i) highlight else green
-                                    if (selectedRestEvent == i) {
-                                        drawRoundRect(
-                                            selection.copy(alpha = 0.55f),
-                                            Offset(restCenter.x - 17.dp.toPx(), restCenter.y - 21.dp.toPx()),
-                                            androidx.compose.ui.geometry.Size(34.dp.toPx(), 42.dp.toPx()),
-                                            cornerRadius = androidx.compose.ui.geometry.CornerRadius(7.dp.toPx())
-                                        )
-                                    }
-                                    val restCode = lengthCodeForUnits(event.restDurationUnits, document.divisions) ?: 5
-                                    drawRestGlyph(restCode, restCenter, restColor, 1.7f)
-                                    if (playingEventIndex == i) {
-                                        drawCircle(highlight, radius = 4.dp.toPx(), center = Offset(restCenter.x - 18.dp.toPx(), restCenter.y))
-                                    }
-                                }
-                                if (event.restDurationUnits == null) event.frets.forEachIndexed { s, fret ->
-                                    if (fret != null) {
-                                        val y = top + 26.dp.toPx() + rowGap * s
-                                        val selected = NotePosition(i, s) in selectedNotes
-                                        val chosen = i == selectedEvent && s == selectedString
-                                        val dropTarget = i == selectedEvent && s == dragTargetString && dragTargetString != selectedString
-                                        val fretPreview = chosen && dragTargetString == selectedString && dragTargetFret >= 0
-                                        val verticalMovePreview = chosen && dragTargetString in document.tuning.indices && dragTargetString != s
-                                        val action = event.actions.getOrNull(s)
-                                        // The notehead circle already delimits the fret; do not add notation parentheses.
-                                        val noteLabel = (if (fretPreview) dragTargetFret else fret).toString()
-                                        val isPlaying = playingEventIndex == i
-                                        val isNextToPlay = upcomingNoteZoomEnabled && nextPlaybackEventIndex == i
-                                        val normalRadius = 14.dp.toPx()
-                                        val radius = when {
-                                            isPlaying -> 22.dp.toPx()
-                                            isNextToPlay -> (18f + anticipationGlow.value * 10f).dp.toPx()
-                                            else -> normalRadius
-                                        }
-                                        val noteFill = when {
-                                            isPlaying -> highlight
-                                            isNextToPlay -> selection
-                                            fretPreview || selected -> selection
-                                            dropTarget -> surfaceRaised
-                                            chosen -> green
-                                            else -> surfaceRaised
-                                        }
-                                        val noteOutline = when {
-                                            isPlaying || isNextToPlay || fretPreview || selected || dropTarget || chosen -> highlight
-                                            else -> line
-                                        }
-                                        val originAlpha = if (verticalMovePreview) 0.30f else 1f
-                                        if (isPlaying) {
-                                            drawCircle(highlight.copy(alpha = 0.32f), radius = radius + 9.dp.toPx(), center = Offset(x, y))
-                                        } else if (isNextToPlay) {
-                                            drawCircle(highlight.copy(alpha = anticipationGlow.value), radius = radius + 8.dp.toPx(), center = Offset(x, y))
-                                        }
-                                        drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
-                                        drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (isPlaying || selected || fretPreview) 3.dp.toPx() else 1.8.dp.toPx()))
-                                        val labelFontSize = when {
-                                            isPlaying -> 17.sp
-                                            isNextToPlay -> (14f + anticipationGlow.value * 7f).sp
-                                            else -> 11.sp
-                                        }
-                                        val labelHalfWidth = when {
-                                            noteLabel.length > 2 && isPlaying -> 14.dp.toPx()
-                                            noteLabel.length > 2 -> 11.dp.toPx()
-                                            isPlaying -> 6.dp.toPx()
-                                            isNextToPlay -> 8.dp.toPx()
-                                            else -> 5.dp.toPx()
-                                        }
-                                        drawText(textMeasurer, noteLabel, Offset(x - labelHalfWidth, y - if (isPlaying) 11.dp.toPx() else 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = labelFontSize, fontWeight = FontWeight.Bold))
-                                        if (verticalMovePreview && dragTargetFret in 0..36) {
-                                            val previewY = top + 26.dp.toPx() + rowGap * dragTargetString
-                                            val targetEmpty = event.frets.getOrNull(dragTargetString) == null
-                                            val previewFill = if (targetEmpty) selection else surfaceRaised
-                                            drawCircle(previewFill.copy(alpha = 0.94f), radius = radius, center = Offset(x, previewY))
-                                            drawCircle(green, radius = radius, center = Offset(x, previewY), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.5f))
-                                            val previewLabel = dragTargetFret.toString()
-                                            drawText(textMeasurer, previewLabel, Offset(x - if (previewLabel.length > 2) 11.dp.toPx() else 5.dp.toPx(), previewY - 8.dp.toPx()), style = TextStyle(color = ink, fontSize = 11.sp, fontWeight = FontWeight.Bold))
-                                        }
-                                        if (heldNote == NotePosition(i, s)) {
-                                            drawMoveArrows(Offset(x, y), radius, green)
-                                        }
-                                        if (fretPreview) {
-                                            val previewText = "Fret $dragTargetFret"
-                                            val previewLayout = textMeasurer.measure(previewText, style = TextStyle(color = paper, fontSize = 10.sp, fontWeight = FontWeight.Bold))
-                                            val bubbleWidth = previewLayout.size.width + 12.dp.toPx()
-                                            val bubbleHeight = previewLayout.size.height + 6.dp.toPx()
-                                            val bubbleLeft = (x - bubbleWidth / 2).coerceIn(0f, size.width - bubbleWidth)
-                                            val bubbleTop = (y - radius - bubbleHeight - 5.dp.toPx()).coerceAtLeast(2.dp.toPx())
-                                            drawRoundRect(green, Offset(bubbleLeft, bubbleTop), androidx.compose.ui.geometry.Size(bubbleWidth, bubbleHeight), cornerRadius = androidx.compose.ui.geometry.CornerRadius(5.dp.toPx()))
-                                            drawText(textMeasurer, previewText, Offset(bubbleLeft + 6.dp.toPx(), bubbleTop + 3.dp.toPx()), style = TextStyle(color = paper, fontSize = 10.sp, fontWeight = FontWeight.Bold))
-                                        }
-                                        val shownLength = durationPreview?.takeIf { it.first == NotePosition(i, s) }?.second
-                                            ?: event.lengthCodes.getOrNull(s)
-                                            ?: event.durationUnits.getOrNull(s)?.let { lengthCodeForUnits(it, document.divisions) }
-                                        shownLength?.let { code ->
-                                            drawDurationGlyph(code, Offset(x + radius + 8.dp.toPx(), y - 7.dp.toPx()), green, 1.dp.toPx())
-                                            if (durationPreview?.first == NotePosition(i, s)) {
-                                                drawText(textMeasurer, durationFraction(code), Offset(x + radius + 8.dp.toPx(), y - 22.dp.toPx()), style = TextStyle(color = green, fontSize = 10.sp, fontWeight = FontWeight.Bold))
+                                                drawPath(wave, green, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
+                                            } else if (action != null) {
+                                                val preferredActionX = if (local < columnsPerSystem - 1) x + colGapPx / 2 else x + 25.dp.toPx()
+                                                // Keep labels inside the canvas: drawText derives its max width from the
+                                                // remaining canvas area and throws if the origin is beyond the edge.
+                                                val actionX = preferredActionX.coerceIn(10.dp.toPx(), (size.width - 18.dp.toPx()).coerceAtLeast(10.dp.toPx()))
+                                                drawText(textMeasurer, action.toString(), Offset(actionX - 4.dp.toPx(), y - 8.dp.toPx()), style = TextStyle(color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold))
                                             }
                                         }
-                                        if (action?.lowercaseChar() == 'v') {
-                                            val waveWidth = 28.dp.toPx()
-                                            val waveHeight = 3.dp.toPx()
-                                            val waveY = y - radius - 4.dp.toPx()
-                                            val segment = waveWidth / 3f
-                                            val wave = Path().apply {
-                                                moveTo(x - waveWidth / 2, waveY)
-                                                repeat(3) { waveIndex ->
-                                                    val startX = x - waveWidth / 2 + waveIndex * segment
-                                                    cubicTo(startX + segment / 4, waveY - waveHeight, startX + segment * 3 / 4, waveY + waveHeight, startX + segment, waveY)
-                                                }
-                                            }
-                                            drawPath(wave, green, style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f, cap = androidx.compose.ui.graphics.StrokeCap.Round))
-                                        } else if (action != null) {
-                                            val preferredActionX = if (local < columnsPerSystem - 1) x + colGapPx / 2 else x + 25.dp.toPx()
-                                            // Keep labels inside the canvas: drawText derives its max width from the
-                                            // remaining canvas area and throws if the origin is beyond the edge.
-                                            val actionX = preferredActionX.coerceIn(10.dp.toPx(), (size.width - 18.dp.toPx()).coerceAtLeast(10.dp.toPx()))
-                                            drawText(textMeasurer, action.toString(), Offset(actionX - 4.dp.toPx(), y - 8.dp.toPx()), style = TextStyle(color = green, fontSize = 11.sp, fontWeight = FontWeight.Bold))
-                                        }
                                     }
                                 }
-                            }
-                            selectionRect?.let { rect ->
-                                drawRect(green.copy(alpha = 0.20f), Offset(rect.left, rect.top), androidx.compose.ui.geometry.Size(rect.width, rect.height))
-                                drawRect(green, Offset(rect.left, rect.top), androidx.compose.ui.geometry.Size(rect.width, rect.height), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f))
+                                selectionRect?.let { rect ->
+                                    drawRect(green.copy(alpha = 0.20f), Offset(rect.left, rect.top), androidx.compose.ui.geometry.Size(rect.width, rect.height))
+                                    drawRect(green, Offset(rect.left, rect.top), androidx.compose.ui.geometry.Size(rect.width, rect.height), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 1.5f))
+                                }
                             }
                         }
                     }
-                }
             }
+        }
         }
         if (!phoneLayout) editorActions()
     }
