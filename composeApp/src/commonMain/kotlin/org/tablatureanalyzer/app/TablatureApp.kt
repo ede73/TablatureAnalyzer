@@ -262,6 +262,8 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                     selectedPlaybackRange = null
                     playheadEventIndex = 0
                     historyResetRequestId += 1
+                }, onSetPartProgram = { program ->
+                    updateDocument(document.updatePart(document.activePart.id) { it.copy(midiProgram = program) })
                 }, onSetPlaybackStart = { playheadEventIndex = it }, onPlaybackSelectionChanged = { selectedPlaybackRange = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
                     val updated = moveNote(document, event, from, target)
                     if (updated != document) {
@@ -413,26 +415,32 @@ private fun NamingSelector(
 }
 
 @Composable
-private fun PartSelector(document: TabDocument, onSelect: (String) -> Unit, onAdd: (TabInstrumentPreset) -> Unit) {
+private fun PartSelector(
+    document: TabDocument,
+    onSelect: (String) -> Unit,
+    onAdd: (TabInstrumentPreset) -> Unit,
+    onSetProgram: (Int) -> Unit
+) {
     var partsExpanded by remember { mutableStateOf(false) }
     var addExpanded by remember { mutableStateOf(false) }
+    var programMenuExpanded by remember { mutableStateOf(false) }
     Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
         if (document.parts.size > 1) {
             Box {
                 TextButton(onClick = { partsExpanded = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-                    Text("Part: ${document.activePart.name} ▾", fontSize = 11.sp, maxLines = 1)
+                    Text("Channel: ${document.activePart.name} ▾", fontSize = 11.sp, maxLines = 1)
                 }
                 DropdownMenu(partsExpanded, onDismissRequest = { partsExpanded = false }) {
                     document.parts.forEach { part ->
                         DropdownMenuItem(
-                            text = { Text(part.name) },
+                            text = { Text("${if (part.id == document.activePart.id) "✓ " else ""}${part.name}") },
                             onClick = { onSelect(part.id); partsExpanded = false }
                         )
                     }
                 }
             }
         } else {
-            Text("Part: ${document.activePart.name}", fontSize = 11.sp, color = muted, maxLines = 1)
+            Text("Channel: ${document.activePart.name}", fontSize = 11.sp, color = muted, maxLines = 1)
         }
         Box {
             OutlinedButton(onClick = { addExpanded = true }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
@@ -447,7 +455,52 @@ private fun PartSelector(document: TabDocument, onSelect: (String) -> Unit, onAd
                 }
             }
         }
+        Box {
+            val midiProgramNames = GeneralMidiPrograms.namesFor(document.activePart)
+            val midiProgramName = midiProgramNames.getOrElse(document.activePart.midiProgram) { "Unknown" }
+            OutlinedButton(
+                onClick = { programMenuExpanded = true },
+                contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+            ) {
+                Text("MIDI: $midiProgramName ▾", fontSize = 11.sp, maxLines = 1)
+            }
+            DropdownMenu(programMenuExpanded, onDismissRequest = { programMenuExpanded = false }) {
+                midiProgramNames.forEachIndexed { program, name ->
+                    DropdownMenuItem(
+                        text = { Text("${if (program == document.activePart.midiProgram) "✓ " else ""}${program + 1}. $name") },
+                        onClick = { onSetProgram(program); programMenuExpanded = false }
+                    )
+                }
+            }
+        }
     }
+}
+
+private object GeneralMidiPrograms {
+    private val gmPrograms = """
+        Acoustic Grand Piano|Bright Acoustic Piano|Electric Grand Piano|Honky-tonk Piano|Electric Piano 1|Electric Piano 2|Harpsichord|Clavinet|
+        Celesta|Glockenspiel|Music Box|Vibraphone|Marimba|Xylophone|Tubular Bells|Dulcimer|
+        Drawbar Organ|Percussive Organ|Rock Organ|Church Organ|Reed Organ|Accordion|Harmonica|Tango Accordion|
+        Acoustic Guitar (nylon)|Acoustic Guitar (steel)|Electric Guitar (jazz)|Electric Guitar (clean)|Electric Guitar (muted)|Overdriven Guitar|Distortion Guitar|Guitar harmonics|
+        Acoustic Bass|Electric Bass (finger)|Electric Bass (pick)|Fretless Bass|Slap Bass 1|Slap Bass 2|Synth Bass 1|Synth Bass 2|
+        Violin|Viola|Cello|Contrabass|Tremolo Strings|Pizzicato Strings|Orchestral Harp|Timpani|
+        String Ensemble 1|String Ensemble 2|Synth Strings 1|Synth Strings 2|Choir Aahs|Voice Oohs|Synth Voice|Orchestra Hit|
+        Trumpet|Trombone|Tuba|Muted Trumpet|French Horn|Brass Section|Synth Brass 1|Synth Brass 2|
+        Soprano Sax|Alto Sax|Tenor Sax|Baritone Sax|Oboe|English Horn|Bassoon|Clarinet|
+        Piccolo|Flute|Recorder|Pan Flute|Blown Bottle|Shakuhachi|Whistle|Ocarina|
+        Lead 1 (square)|Lead 2 (sawtooth)|Lead 3 (calliope)|Lead 4 (chiff)|Lead 5 (charang)|Lead 6 (voice)|Lead 7 (fifths)|Lead 8 (bass + lead)|
+        Pad 1 (new age)|Pad 2 (warm)|Pad 3 (polysynth)|Pad 4 (choir)|Pad 5 (bowed)|Pad 6 (metallic)|Pad 7 (halo)|Pad 8 (sweep)|
+        FX 1 (rain)|FX 2 (soundtrack)|FX 3 (crystal)|FX 4 (atmosphere)|FX 5 (brightness)|FX 6 (goblins)|FX 7 (echoes)|FX 8 (sci-fi)|
+        Sitar|Banjo|Shamisen|Koto|Kalimba|Bag pipe|Fiddle|Shanai|
+        Tinkle Bell|Agogo|Steel Drums|Woodblock|Taiko Drum|Melodic Tom|Synth Drum|Reverse Cymbal|
+        Guitar Fret Noise|Breath Noise|Seashore|Bird Tweet|Telephone Ring|Helicopter|Applause|Gunshot
+    """.trimIndent().replace("\n", "").split('|').map(String::trim)
+
+    private val drumKits = listOf(
+        "Standard Kit", "Room Kit", "Power Kit", "Electronic Kit", "TR-808 Kit", "Jazz Kit", "Brush Kit", "Orchestra Kit"
+    )
+
+    fun namesFor(part: TabPart): List<String> = if (part.isPercussion) drumKits else gmPrograms
 }
 
 private fun stringLabel(part: TabPart, stringIndex: Int, naming: ChordNamingSystem): String {
@@ -457,7 +510,7 @@ private fun stringLabel(part: TabPart, stringIndex: Int, naming: ChordNamingSyst
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSelectPart: (String) -> Unit, onAddPart: (TabInstrumentPreset) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
+private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSelectPart: (String) -> Unit, onAddPart: (TabInstrumentPreset) -> Unit, onSetPartProgram: (Int) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
     val textMeasurer = rememberTextMeasurer()
     var dragTargetString by remember { mutableIntStateOf(-1) }
     var dragTargetFret by remember { mutableIntStateOf(-1) }
@@ -530,7 +583,7 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
         ) {
             Column(Modifier.fillMaxWidth().verticalScroll(staffScrollState).padding(if (document.events.isEmpty()) 10.dp else 16.dp)) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                    PartSelector(document, onSelectPart, onAddPart)
+                    PartSelector(document, onSelectPart, onAddPart, onSetPartProgram)
                     NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
                     Text("Click empty position to set play start · select notes to loop · drag up/down: string · left/right: fret", fontSize = 12.sp, color = muted)
                 }
