@@ -9,10 +9,18 @@ import javax.swing.JFileChooser
 import javax.swing.filechooser.FileNameExtensionFilter
 
 @Composable
-actual fun PlatformOpenTabButton(onText: (String) -> Unit) {
+actual fun PlatformOpenTabButton(onBytes: (ByteArray) -> Unit) {
     OutlinedButton(onClick = {
-        val picker = JFileChooser().apply { fileFilter = FileNameExtensionFilter("Tab / MusicXML / editable project (*.tab, *.txt, *.musicxml, *.xml, *.ta)", "tab", "txt", "musicxml", "xml", "ta") }
-        if (picker.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) onText(File(picker.selectedFile.toURI()).readText())
+        val picker = JFileChooser().apply {
+            dialogTitle = "Open tab, MusicXML, or editable project"
+            val supportedFormats = FileNameExtensionFilter(
+                "Tab / PowerTab / MusicXML / editable project (*.tab, *.ptb, *.ptab, *.txt, *.musicxml, *.xml, *.ta)",
+                "tab", "ptb", "ptab", "txt", "musicxml", "xml", "ta"
+            )
+            addChoosableFileFilter(supportedFormats)
+            fileFilter = supportedFormats
+        }
+        if (picker.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) onBytes(File(picker.selectedFile.toURI()).readBytes())
     }) { Text("Open") }
 }
 

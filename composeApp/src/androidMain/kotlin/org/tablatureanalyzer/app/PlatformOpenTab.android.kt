@@ -9,12 +9,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
 @Composable
-actual fun PlatformOpenTabButton(onText: (String) -> Unit) {
+actual fun PlatformOpenTabButton(onBytes: (ByteArray) -> Unit) {
     val context = LocalContext.current
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        if (uri != null) runCatching { context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } }.getOrNull()?.let(onText)
+        if (uri != null) runCatching { context.contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()?.let(onBytes)
     }
-    OutlinedButton(onClick = { picker.launch(arrayOf("text/*", "application/octet-stream", "application/xml", "application/vnd.recordare.musicxml+xml")) }) { Text("Open") }
+    OutlinedButton(onClick = { picker.launch(arrayOf("*/*")) }) { Text("Open") }
 }
 
 @Composable
