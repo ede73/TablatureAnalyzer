@@ -805,13 +805,11 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
             shape = RoundedCornerShape(16.dp)
         ) {
             Column(Modifier.fillMaxWidth().verticalScroll(staffScrollState).padding(if (document.events.isEmpty()) 10.dp else 16.dp)) {
-                if (document.parts.size > 1 || !phoneLayout) {
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                        PartSelector(document, onSelectPart, onAddPart, onSetPartProgram)
-                        if (!phoneLayout) {
-                            NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
-                            Text("Click empty position to set play start · select notes to loop · drag up/down: string · left/right: fret", fontSize = 12.sp, color = muted)
-                        }
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                    PartSelector(document, onSelectPart, onAddPart, onSetPartProgram)
+                    if (!phoneLayout) {
+                        NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
+                        Text("Click empty position to set play start · select notes to loop · drag up/down: string · left/right: fret", fontSize = 12.sp, color = muted)
                     }
                 }
                 Spacer(Modifier.height(if (document.events.isEmpty()) 4.dp else 12.dp))

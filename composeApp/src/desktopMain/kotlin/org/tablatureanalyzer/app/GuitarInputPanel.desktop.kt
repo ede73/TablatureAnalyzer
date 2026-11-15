@@ -313,8 +313,8 @@ actual fun GuitarInputPanel(
                     }) { Text("Save last 10 s", fontSize = 11.sp) }
                 }
                 Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1)
-                TextButton(onClick = { panelExpanded = !panelExpanded }) {
-                    Text(if (panelExpanded) "Hide" else "Show", fontSize = 11.sp)
+                OutlinedButton(onClick = { panelExpanded = !panelExpanded }) {
+                    Text(if (panelExpanded) "Collapse" else "Expand", fontSize = 11.sp)
                 }
             }
             if (panelExpanded) {
