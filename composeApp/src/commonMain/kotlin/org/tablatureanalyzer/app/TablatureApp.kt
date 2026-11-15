@@ -731,7 +731,6 @@ private fun EditorPage(
     LaunchedEffect(openControlsRequest) {
         if (phoneLayout && openControlsRequest > 0) mobileControlsDrawer.open()
     }
-    var lastFollowedSystem by remember { mutableIntStateOf(-1) }
     fun applyFretLimitEdit(operation: GroupFretOperation, input: String) {
         val limit = input.toIntOrNull()?.takeIf { it in 0..36 } ?: return
         if (selectedNotes.isEmpty()) return
@@ -1036,24 +1035,22 @@ private fun EditorPage(
                             val systemHeight = maxOf(206.dp, 52.dp + 32.dp * (document.tuning.size - 1))
                             LaunchedEffect(playingEventIndex, columnsPerSystem, systemHeight) {
                                 val activeSystem = if (playingEventIndex < 0) -1 else (playingEventIndex / columnsPerSystem).coerceIn(0, systems - 1)
-                                if (activeSystem < 0) {
-                                    lastFollowedSystem = -1
-                                } else if (activeSystem != lastFollowedSystem) {
-                                    lastFollowedSystem = activeSystem
+                                if (activeSystem >= 0) {
                                     val systemHeightPx = with(density) { systemHeight.roundToPx() }
                                     val currentScroll = staffScrollState.value
                                     val viewportTop = staffViewportTopOnScreen
                                     val systemTopOnScreen = staffCanvasTopOnScreen + activeSystem * systemHeightPx
                                     val systemTopInViewport = systemTopOnScreen - viewportTop
-                                    val systemBottomInViewport = systemTopInViewport + systemHeightPx
                                     val viewportHeight = staffScrollState.viewportSize.toFloat()
                                     val bottomClearance = with(density) { 24.dp.roundToPx() }
-                                    val delta = when {
-                                        systemTopInViewport < 0f -> systemTopInViewport
-                                        systemBottomInViewport > viewportHeight -> systemBottomInViewport - viewportHeight + bottomClearance
-                                        else -> 0f
-                                    }
-                                    val target = (currentScroll + delta.roundToInt()).coerceIn(0, staffScrollState.maxValue)
+                                    val target = playbackFollowTargetScroll(
+                                        currentScroll = currentScroll,
+                                        systemTopInViewport = systemTopInViewport,
+                                        systemHeight = systemHeightPx,
+                                        viewportHeight = viewportHeight.roundToInt(),
+                                        bottomClearance = bottomClearance,
+                                        maxScroll = staffScrollState.maxValue
+                                    )
                                     if (target != currentScroll) staffScrollState.animateScrollTo(target)
                                 }
                             }
