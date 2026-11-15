@@ -49,6 +49,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
 import kotlin.math.roundToInt
 
 private val ink = Color(0xFFE6ECE9)
@@ -148,6 +149,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
     var importText by remember { mutableStateOf("") }
     var importError by remember { mutableStateOf<String?>(null) }
     var showNewTabConfirmation by remember { mutableStateOf(false) }
+    var openTabControlsRequest by remember { mutableIntStateOf(0) }
     var playingEventIndex by remember { mutableIntStateOf(-1) }
     var durationEditedEventIndex by remember { mutableIntStateOf(-1) }
     var durationPreviewRequestId by remember { mutableIntStateOf(0) }
@@ -166,8 +168,65 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
         onSurfaceVariant = muted,
         outline = line
     )) {
+        BoxWithConstraints(Modifier.fillMaxSize().background(paper)) {
+            // Use the shorter window edge so a phone stays in the compact
+            // controls-drawer layout after rotating to landscape.
+            val phoneLayout = minOf(maxWidth, maxHeight) < 600.dp
+            val editorHeader: @Composable () -> Unit = {
+                if (page == 0) {
+                    Spacer(Modifier.height(6.dp))
+                    FlowRow(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        itemVerticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedButton(onClick = {
+                            val hasContent = document.events.isNotEmpty() ||
+                                document.tempoChanges != listOf(TabTempoChange(0, 120)) ||
+                                document.timeSignatures != listOf(TabTimeSignatureChange(0, 4, 4))
+                            if (hasContent) showNewTabConfirmation = true
+                            else loadDocument(TabDocument(document.tuning, emptyList()))
+                        }) { Text("New") }
+                        PlatformOpenTabButton(onText = { text -> loadDocument(TabCodec.parse(text)) })
+                        OutlinedButton(onClick = { showImport = true }) { Text("Paste") }
+                        PlatformSaveProjectButton(TabCodec.encodeInternal(document))
+                        PlatformSaveMusicXmlButton(MusicXmlCodec.encode(document))
+                        OutlinedButton(onClick = ::undoDocument, enabled = undoHistory.isNotEmpty()) { Text("↶ Undo") }
+                        OutlinedButton(onClick = ::redoDocument, enabled = redoHistory.isNotEmpty()) { Text("↷ Redo") }
+                        OutlinedTextField(
+                            value = tempoInput,
+                            onValueChange = { value ->
+                                tempoInput = value.filter(Char::isDigit).take(3)
+                                tempoInput.toIntOrNull()?.takeIf { it in 20..400 }?.let { bpm ->
+                                    updateDocument(document.copy(tempoChanges = listOf(TabTempoChange(0, bpm)) + document.tempoChanges.filter { it.eventIndex > 0 }), "tempo")
+                                }
+                            },
+                            modifier = Modifier.width(90.dp),
+                            label = { Text("BPM") },
+                            singleLine = true
+                        )
+                        PlatformMidiPlayerButton(
+                            document,
+                            durationEditedEventIndex.takeIf { page == 0 && it >= 0 },
+                            durationPreviewRequestId,
+                            playheadEventIndex,
+                            selectedPlaybackRange
+                        ) { eventIndex -> playingEventIndex = eventIndex ?: -1 }
+                    }
+                    Spacer(Modifier.height(4.dp))
+                    GuitarInputPanel(GuitarInputMode.TAB_RECORD, document.tuning, tabNaming) { pitches, _ ->
+                        val event = tabEventForPitches(document.tuning, pitches) ?: return@GuitarInputPanel
+                        val eventIndex = document.events.size
+                        updateDocument(document.copy(events = document.events + event))
+                        selectedEvent = eventIndex
+                        selectedString = event.frets.indexOfFirst { it != null }
+                        playheadEventIndex = eventIndex
+                    }
+                }
+            }
         Column(
-            Modifier.fillMaxSize().background(paper).padding(horizontal = 18.dp, vertical = 14.dp)
+            Modifier.fillMaxSize().background(paper).padding(horizontal = if (phoneLayout) 4.dp else 18.dp, vertical = if (phoneLayout) 2.dp else 14.dp)
                 .onKeyEvent { event ->
                     if (event.type != KeyEventType.KeyDown || (!event.isMetaPressed && !event.isCtrlPressed)) false
                     else when {
@@ -181,67 +240,21 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 TabRow(selectedTabIndex = page, modifier = Modifier.weight(1f)) {
                     listOf("Tab editor", "Scales", "Chords").forEachIndexed { i, label ->
-                        Tab(selected = page == i, onClick = { page = i }, text = { Text(label, maxLines = 1) })
+                        Tab(selected = page == i, onClick = { page = i }, text = { Text(if (phoneLayout && i == 0) "Tab" else label, maxLines = 1) })
                     }
                 }
-                NamingSelector("Default", defaultNaming, allowDefault = false) { defaultNaming = it ?: ChordNamingSystem.US }
-            }
-            if (page == 0) {
-                Spacer(Modifier.height(6.dp))
-                FlowRow(
-                    Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(6.dp),
-                    itemVerticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedButton(onClick = {
-                        val hasContent = document.events.isNotEmpty() ||
-                            document.tempoChanges != listOf(TabTempoChange(0, 120)) ||
-                            document.timeSignatures != listOf(TabTimeSignatureChange(0, 4, 4))
-                        if (hasContent) showNewTabConfirmation = true
-                        else loadDocument(TabDocument(document.tuning, emptyList()))
-                    }) { Text("New") }
-                    PlatformOpenTabButton(onText = { text -> loadDocument(TabCodec.parse(text)) })
-                    OutlinedButton(onClick = { showImport = true }) { Text("Paste") }
-                    PlatformSaveProjectButton(TabCodec.encodeInternal(document))
-                    PlatformSaveMusicXmlButton(MusicXmlCodec.encode(document))
-                    OutlinedButton(onClick = ::undoDocument, enabled = undoHistory.isNotEmpty()) { Text("↶ Undo") }
-                    OutlinedButton(onClick = ::redoDocument, enabled = redoHistory.isNotEmpty()) { Text("↷ Redo") }
-                    OutlinedTextField(
-                        value = tempoInput,
-                        onValueChange = { value ->
-                            tempoInput = value.filter(Char::isDigit).take(3)
-                            tempoInput.toIntOrNull()?.takeIf { it in 20..400 }?.let { bpm ->
-                                updateDocument(document.copy(tempoChanges = listOf(TabTempoChange(0, bpm)) + document.tempoChanges.filter { it.eventIndex > 0 }), "tempo")
-                            }
-                        },
-                        modifier = Modifier.width(90.dp),
-                        label = { Text("BPM") },
-                        singleLine = true
-                    )
-                    PlatformMidiPlayerButton(
-                        document,
-                        durationEditedEventIndex.takeIf { page == 0 && it >= 0 },
-                        durationPreviewRequestId,
-                        playheadEventIndex,
-                        selectedPlaybackRange
-                    ) { eventIndex -> playingEventIndex = eventIndex ?: -1 }
+                if (phoneLayout && page == 0) {
+                    IconButton(onClick = { openTabControlsRequest++ }, modifier = Modifier.semantics { contentDescription = "Open controls" }) {
+                        Text("☰", color = green, fontSize = 20.sp)
+                    }
+                } else {
+                    NamingSelector("Default", defaultNaming, allowDefault = false) { defaultNaming = it ?: ChordNamingSystem.US }
                 }
             }
-            if (page == 0) {
-                Spacer(Modifier.height(4.dp))
-                GuitarInputPanel(GuitarInputMode.TAB_RECORD, document.tuning, tabNaming) { pitches, _ ->
-                    val event = tabEventForPitches(document.tuning, pitches) ?: return@GuitarInputPanel
-                    val eventIndex = document.events.size
-                    updateDocument(document.copy(events = document.events + event))
-                    selectedEvent = eventIndex
-                    selectedString = event.frets.indexOfFirst { it != null }
-                    playheadEventIndex = eventIndex
-                }
-            }
+            if (!phoneLayout) editorHeader()
             Spacer(Modifier.height(6.dp))
             if (page == 0) {
-                EditorPage(document, selectedEvent, selectedString, playingEventIndex, playheadEventIndex, historyResetRequestId, tabNaming, tabNamingOverride, { tabNamingOverride = it }, onSetPlaybackStart = { playheadEventIndex = it }, onPlaybackSelectionChanged = { selectedPlaybackRange = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
+                EditorPage(document, selectedEvent, selectedString, playingEventIndex, playheadEventIndex, historyResetRequestId, tabNaming, tabNamingOverride, { tabNamingOverride = it }, phoneLayout, openTabControlsRequest, editorHeader, onSetPlaybackStart = { playheadEventIndex = it }, onPlaybackSelectionChanged = { selectedPlaybackRange = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
                     val updated = moveNote(document, event, from, target)
                     if (updated != document) {
                         updateDocument(updated)
@@ -357,6 +370,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                 dismissButton = { TextButton(onClick = { showNewTabConfirmation = false }) { Text("Cancel") } }
             )
         }
+        }
     }
 }
 
@@ -385,7 +399,7 @@ private fun NamingSelector(
 
 @Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
+private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, phoneLayout: Boolean, openControlsRequest: Int, globalControls: @Composable () -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
     val textMeasurer = rememberTextMeasurer()
     var dragTargetString by remember { mutableIntStateOf(-1) }
     var dragTargetFret by remember { mutableIntStateOf(-1) }
@@ -437,6 +451,11 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
     var durationPreview by remember { mutableStateOf<Pair<NotePosition, Int>?>(null) }
     val editorFocusRequester = remember { FocusRequester() }
     val staffScrollState = rememberScrollState()
+    val mobileControlsDrawer = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val coroutineScope = rememberCoroutineScope()
+    LaunchedEffect(openControlsRequest) {
+        if (phoneLayout && openControlsRequest > 0) mobileControlsDrawer.open()
+    }
     var lastFollowedSystem by remember { mutableIntStateOf(-1) }
     fun applyFretLimitEdit(operation: GroupFretOperation, input: String) {
         val limit = input.toIntOrNull()?.takeIf { it in 0..36 } ?: return
@@ -450,6 +469,210 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
         groupTransformMessage = result.message
         if (result.applied) selectedNotes = result.movedSelection
     }
+    val editorActions: @Composable () -> Unit = {
+        Spacer(Modifier.height(12.dp))
+                    val movable = selectedEvent >= 0 && selectedString >= 0 && document.events.getOrNull(selectedEvent)?.frets?.getOrNull(selectedString) != null
+                    FlowRow(
+                        Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(6.dp),
+                        itemVerticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            RadioOption("Allow adding notes", addNoteMode, onClick = {
+                                addNoteMode = !addNoteMode
+                                if (addNoteMode) markerPlacement = null
+                            })
+                        }
+                        OutlinedButton(onClick = {
+                            markerPlacement = if (markerPlacement == MarkerPlacement.BAR) null else MarkerPlacement.BAR
+                            addNoteMode = false
+                        }) { Text(if (markerPlacement == MarkerPlacement.BAR) "Place bar line…" else "Place bar line") }
+                        OutlinedButton(onClick = {
+                            markerPlacement = if (markerPlacement == MarkerPlacement.REPEAT_START) null else MarkerPlacement.REPEAT_START
+                            addNoteMode = false
+                        }) { Text(if (markerPlacement == MarkerPlacement.REPEAT_START) "Place repeat start…" else "Repeat start") }
+                        OutlinedButton(onClick = {
+                            markerPlacement = if (markerPlacement == MarkerPlacement.REPEAT_END) null else MarkerPlacement.REPEAT_END
+                            addNoteMode = false
+                        }) { Text(if (markerPlacement == MarkerPlacement.REPEAT_END) "Place repeat end…" else "Repeat end") }
+                        document.events.getOrNull(selectedBarEvent)?.takeIf { it.repeatEndAfter }?.let { repeatEvent ->
+                            RepeatCountDragControl(repeatEvent.repeatCount) { delta -> onAdjustRepeatCount(selectedBarEvent, delta) }
+                        }
+                        if (selectedNotes.isNotEmpty() || selectedRestEvent >= 0) {
+                            RadioOption("Rest", selectedRestEvent >= 0) {
+                                if (selectedRestEvent >= 0) {
+                                    val restoredEventIndex = selectedRestEvent
+                                    val restored = document.events.getOrNull(restoredEventIndex)?.frets
+                                        ?.mapIndexedNotNull { string, fret -> if (fret != null) NotePosition(restoredEventIndex, string) else null }
+                                        .orEmpty()
+                                    onRemoveRest(restoredEventIndex)
+                                    selectedNotes = restored.toSet()
+                                    restored.firstOrNull()?.let { onSelect(it.eventIndex, it.stringIndex) }
+                                    selectedRestEvent = -1
+                                } else {
+                                    val eventIndices = selectedNotes.map { it.eventIndex }.toSet()
+                                    val firstEvent = eventIndices.minOrNull()
+                                    if (firstEvent != null) {
+                                        val event = document.events[firstEvent]
+                                        val units = event.frets.indices.mapNotNull { string ->
+                                            if (event.frets[string] == null) null
+                                            else event.durationUnits.getOrNull(string)
+                                                ?: event.lengthCodes.getOrNull(string)?.let { durationUnitsForLengthCode(it, document.divisions) }
+                                                ?: document.divisions
+                                        }.maxOrNull() ?: document.divisions
+                                        selectedLengthCode = lengthCodeForUnits(units, document.divisions) ?: 5
+                                        onConvertToRest(eventIndices)
+                                        selectedNotes = emptySet()
+                                        selectedBarEvent = -1
+                                        selectedRestEvent = firstEvent
+                                        onSelect(-1, -1)
+                                    }
+                                }
+                            }
+                        }
+                        Box {
+                            OutlinedButton(
+                                onClick = { showLengthMenu = true },
+                                modifier = Modifier.semantics { contentDescription = "Note duration: ${legacyLengthLabel(selectedLengthCode)}" }
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    DurationGlyphIcon(selectedLengthCode, Modifier.size(24.dp, 22.dp))
+                                    Text("▾")
+                                }
+                            }
+                            DropdownMenu(expanded = showLengthMenu, onDismissRequest = {
+                                showLengthMenu = false
+                                durationMenuTargets = emptySet()
+                            }) {
+                                (1..12).forEach { code ->
+                                    DropdownMenuItem(
+                                        text = {
+                                            Row(
+                                                Modifier.fillMaxWidth().semantics { contentDescription = legacyLengthLabel(code) },
+                                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                DurationGlyphIcon(code, Modifier.size(28.dp, 24.dp))
+                                                when (code) {
+                                                    1 -> Text("1", color = muted, fontSize = 12.sp)
+                                                    3 -> Text("2", color = muted, fontSize = 12.sp)
+                                                    5 -> Text("4", color = muted, fontSize = 12.sp)
+                                                    7 -> Text("8", color = muted, fontSize = 12.sp)
+                                                }
+                                            }
+                                        },
+                                        onClick = {
+                                        selectedLengthCode = code
+                                        val targets = durationMenuTargets.ifEmpty { selectedNotes.ifEmpty {
+                                            if (movable) setOf(NotePosition(selectedEvent, selectedString)) else emptySet()
+                                        } }
+                                        if (selectedRestEvent >= 0) onSetRestLength(selectedRestEvent, code)
+                                        else if (targets.isNotEmpty()) onSetLength(targets, code)
+                                        durationMenuTargets = emptySet()
+                                        showLengthMenu = false
+                                    })
+                                }
+                            }
+                        }
+                        if (movable) OutlinedButton(onClick = onDelete) { Text("Delete selected") }
+                        if (selectedBarEvent >= 0) OutlinedButton(onClick = {
+                            onRemoveBar(selectedBarEvent)
+                            selectedBarEvent = -1
+                        }) { Text("Remove selected marker") }
+                        // Keep the direct string-move actions alongside drag-and-drop. Dragging is
+                        // useful, but the explicit pitch-preserving choices are often easier to
+                        // understand and more precise, especially on a trackpad or touchscreen.
+                        if (selectedNotes.size > 1) {
+                            OutlinedButton(onClick = { selectedNotes = onMoveDirection(selectedNotes, 1) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) { Text("↓ Move") }
+                            OutlinedButton(onClick = { selectedNotes = onMoveDirection(selectedNotes, -1) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) { Text("↑ Move") }
+                        }
+                    }
+                    if (selectedNotes.isNotEmpty() || selectedRestEvent >= 0 || selectedBarEvent >= 0) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val selectedMarker = document.events.getOrNull(selectedBarEvent)
+                            val selectionLabel = when {
+                                selectedRestEvent >= 0 -> "Rest selected"
+                                selectedBarEvent < 0 -> "${selectedNotes.size} selected"
+                                selectedMarker?.repeatStartBefore == true && selectedMarker.repeatEndAfter -> "Repeat markers selected"
+                                selectedMarker?.repeatStartBefore == true -> "Repeat start selected"
+                                selectedMarker?.repeatEndAfter == true -> "Repeat end selected"
+                                else -> "Bar line selected"
+                            }
+                            Text(selectionLabel, fontSize = 12.sp, color = muted)
+                            TextButton(onClick = {
+                                selectedNotes = emptySet()
+                                selectedRestEvent = -1
+                                selectedBarEvent = -1
+                                onSelect(-1, -1)
+                            }) { Text("Clear selection") }
+                        }
+                    }
+        Spacer(Modifier.height(10.dp))
+        Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(12.dp)) {
+            Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    TextButton(onClick = { showFretTools = !showFretTools }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
+                        Text(if (showFretTools) "Fret range & transpose ▴" else "Fret range & transpose ▾")
+                    }
+                }
+                if (showFretTools) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text("Fret range", fontSize = 13.sp, color = ink, fontWeight = FontWeight.Medium)
+                        OutlinedTextField(minimumFret, { value ->
+                            minimumFret = value.filter(Char::isDigit).take(2)
+                            applyFretLimitEdit(GroupFretOperation.RAISE_MINIMUM, minimumFret)
+                        }, Modifier.width(84.dp), label = { Text("Min") }, singleLine = true)
+                        Text("to", color = muted)
+                        OutlinedTextField(maximumFret, { value ->
+                            maximumFret = value.filter(Char::isDigit).take(2)
+                            applyFretLimitEdit(GroupFretOperation.LOWER_MAXIMUM, maximumFret)
+                        }, Modifier.width(84.dp), label = { Text("Max") }, singleLine = true)
+                        Text("Transpose song", fontSize = 13.sp, color = ink, fontWeight = FontWeight.Medium)
+                        OutlinedTextField(transposeSemitones, { raw ->
+                            transposeSemitones = raw.filterIndexed { index, char -> char.isDigit() || index == 0 && char == '-' }.take(3)
+                        }, Modifier.width(112.dp), label = { Text("Semitones", maxLines = 1) }, singleLine = true)
+                        Button(
+                            enabled = transposeSemitones.toIntOrNull()?.let { it in -48..48 && it != 0 } == true,
+                            onClick = {
+                                val result = onGroupTransform(GroupFretRequest(GroupFretOperation.TRANSPOSE, minimumFret.toIntOrNull() ?: -1, maximumFret.toIntOrNull() ?: -1, transposeSemitones.toIntOrNull() ?: 999))
+                                groupTransformMessage = result.message
+                                if (result.applied) selectedNotes = emptySet()
+                            }
+                        ) { Text("Transpose") }
+                    }
+                    if (groupTransformMessage.isNotBlank()) {
+                        Text(groupTransformMessage, fontSize = 12.sp, color = if (groupTransformMessage.contains("Could not") || groupTransformMessage.contains("must be") || groupTransformMessage.contains("Select notes")) error else muted)
+                    }
+                }
+            }
+        }
+    }
+    ModalNavigationDrawer(
+        drawerState = mobileControlsDrawer,
+        gesturesEnabled = phoneLayout,
+        drawerContent = {
+            if (phoneLayout) {
+                ModalDrawerSheet(
+                    modifier = Modifier.fillMaxHeight().widthIn(max = 360.dp),
+                    drawerContainerColor = surface
+                ) {
+                    Column(
+                        Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                            Text("Controls", modifier = Modifier.weight(1f), color = ink, fontWeight = FontWeight.SemiBold)
+                            TextButton(onClick = { coroutineScope.launch { mobileControlsDrawer.close() } }) { Text("Done") }
+                        }
+                        NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
+                        globalControls()
+                        editorActions()
+                    }
+                }
+            }
+        }
+    ) {
     Column(Modifier.fillMaxSize()) {
         Card(
             modifier = Modifier.weight(1f),
@@ -457,9 +680,11 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
             shape = RoundedCornerShape(16.dp)
         ) {
             Column(Modifier.fillMaxWidth().verticalScroll(staffScrollState).padding(if (document.events.isEmpty()) 10.dp else 16.dp)) {
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                    NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
-                    Text("Click empty position to set play start · select notes to loop · drag up/down: string · left/right: fret", fontSize = 12.sp, color = muted)
+                if (!phoneLayout) {
+                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
+                        NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
+                        Text("Click empty position to set play start · select notes to loop · drag up/down: string · left/right: fret", fontSize = 12.sp, color = muted)
+                    }
                 }
                 Spacer(Modifier.height(if (document.events.isEmpty()) 4.dp else 12.dp))
                 if (document.events.isEmpty()) {
@@ -956,183 +1181,8 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                 }
             }
         }
-        Spacer(Modifier.height(12.dp))
-                    val movable = selectedEvent >= 0 && selectedString >= 0 && document.events.getOrNull(selectedEvent)?.frets?.getOrNull(selectedString) != null
-                    FlowRow(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp),
-                        itemVerticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            RadioOption("Allow adding notes", addNoteMode, onClick = {
-                                addNoteMode = !addNoteMode
-                                if (addNoteMode) markerPlacement = null
-                            })
-                        }
-                        OutlinedButton(onClick = {
-                            markerPlacement = if (markerPlacement == MarkerPlacement.BAR) null else MarkerPlacement.BAR
-                            addNoteMode = false
-                        }) { Text(if (markerPlacement == MarkerPlacement.BAR) "Place bar line…" else "Place bar line") }
-                        OutlinedButton(onClick = {
-                            markerPlacement = if (markerPlacement == MarkerPlacement.REPEAT_START) null else MarkerPlacement.REPEAT_START
-                            addNoteMode = false
-                        }) { Text(if (markerPlacement == MarkerPlacement.REPEAT_START) "Place repeat start…" else "Repeat start") }
-                        OutlinedButton(onClick = {
-                            markerPlacement = if (markerPlacement == MarkerPlacement.REPEAT_END) null else MarkerPlacement.REPEAT_END
-                            addNoteMode = false
-                        }) { Text(if (markerPlacement == MarkerPlacement.REPEAT_END) "Place repeat end…" else "Repeat end") }
-                        document.events.getOrNull(selectedBarEvent)?.takeIf { it.repeatEndAfter }?.let { repeatEvent ->
-                            RepeatCountDragControl(repeatEvent.repeatCount) { delta -> onAdjustRepeatCount(selectedBarEvent, delta) }
-                        }
-                        if (selectedNotes.isNotEmpty() || selectedRestEvent >= 0) {
-                            RadioOption("Rest", selectedRestEvent >= 0) {
-                                if (selectedRestEvent >= 0) {
-                                    val restoredEventIndex = selectedRestEvent
-                                    val restored = document.events.getOrNull(restoredEventIndex)?.frets
-                                        ?.mapIndexedNotNull { string, fret -> if (fret != null) NotePosition(restoredEventIndex, string) else null }
-                                        .orEmpty()
-                                    onRemoveRest(restoredEventIndex)
-                                    selectedNotes = restored.toSet()
-                                    restored.firstOrNull()?.let { onSelect(it.eventIndex, it.stringIndex) }
-                                    selectedRestEvent = -1
-                                } else {
-                                    val eventIndices = selectedNotes.map { it.eventIndex }.toSet()
-                                    val firstEvent = eventIndices.minOrNull()
-                                    if (firstEvent != null) {
-                                        val event = document.events[firstEvent]
-                                        val units = event.frets.indices.mapNotNull { string ->
-                                            if (event.frets[string] == null) null
-                                            else event.durationUnits.getOrNull(string)
-                                                ?: event.lengthCodes.getOrNull(string)?.let { durationUnitsForLengthCode(it, document.divisions) }
-                                                ?: document.divisions
-                                        }.maxOrNull() ?: document.divisions
-                                        selectedLengthCode = lengthCodeForUnits(units, document.divisions) ?: 5
-                                        onConvertToRest(eventIndices)
-                                        selectedNotes = emptySet()
-                                        selectedBarEvent = -1
-                                        selectedRestEvent = firstEvent
-                                        onSelect(-1, -1)
-                                    }
-                                }
-                            }
-                        }
-                        Box {
-                            OutlinedButton(
-                                onClick = { showLengthMenu = true },
-                                modifier = Modifier.semantics { contentDescription = "Note duration: ${legacyLengthLabel(selectedLengthCode)}" }
-                            ) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    DurationGlyphIcon(selectedLengthCode, Modifier.size(24.dp, 22.dp))
-                                    Text("▾")
-                                }
-                            }
-                            DropdownMenu(expanded = showLengthMenu, onDismissRequest = {
-                                showLengthMenu = false
-                                durationMenuTargets = emptySet()
-                            }) {
-                                (1..12).forEach { code ->
-                                    DropdownMenuItem(
-                                        text = {
-                                            Row(
-                                                Modifier.fillMaxWidth().semantics { contentDescription = legacyLengthLabel(code) },
-                                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                DurationGlyphIcon(code, Modifier.size(28.dp, 24.dp))
-                                                when (code) {
-                                                    1 -> Text("1", color = muted, fontSize = 12.sp)
-                                                    3 -> Text("2", color = muted, fontSize = 12.sp)
-                                                    5 -> Text("4", color = muted, fontSize = 12.sp)
-                                                    7 -> Text("8", color = muted, fontSize = 12.sp)
-                                                }
-                                            }
-                                        },
-                                        onClick = {
-                                        selectedLengthCode = code
-                                        val targets = durationMenuTargets.ifEmpty { selectedNotes.ifEmpty {
-                                            if (movable) setOf(NotePosition(selectedEvent, selectedString)) else emptySet()
-                                        } }
-                                        if (selectedRestEvent >= 0) onSetRestLength(selectedRestEvent, code)
-                                        else if (targets.isNotEmpty()) onSetLength(targets, code)
-                                        durationMenuTargets = emptySet()
-                                        showLengthMenu = false
-                                    })
-                                }
-                            }
-                        }
-                        if (movable) OutlinedButton(onClick = onDelete) { Text("Delete selected") }
-                        if (selectedBarEvent >= 0) OutlinedButton(onClick = {
-                            onRemoveBar(selectedBarEvent)
-                            selectedBarEvent = -1
-                        }) { Text("Remove selected marker") }
-                        // Keep the direct string-move actions alongside drag-and-drop. Dragging is
-                        // useful, but the explicit pitch-preserving choices are often easier to
-                        // understand and more precise, especially on a trackpad or touchscreen.
-                        if (selectedNotes.size > 1) {
-                            OutlinedButton(onClick = { selectedNotes = onMoveDirection(selectedNotes, 1) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) { Text("↓ Move") }
-                            OutlinedButton(onClick = { selectedNotes = onMoveDirection(selectedNotes, -1) }, contentPadding = PaddingValues(horizontal = 9.dp, vertical = 0.dp)) { Text("↑ Move") }
-                        }
-                    }
-                    if (selectedNotes.isNotEmpty() || selectedRestEvent >= 0 || selectedBarEvent >= 0) {
-                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            val selectedMarker = document.events.getOrNull(selectedBarEvent)
-                            val selectionLabel = when {
-                                selectedRestEvent >= 0 -> "Rest selected"
-                                selectedBarEvent < 0 -> "${selectedNotes.size} selected"
-                                selectedMarker?.repeatStartBefore == true && selectedMarker.repeatEndAfter -> "Repeat markers selected"
-                                selectedMarker?.repeatStartBefore == true -> "Repeat start selected"
-                                selectedMarker?.repeatEndAfter == true -> "Repeat end selected"
-                                else -> "Bar line selected"
-                            }
-                            Text(selectionLabel, fontSize = 12.sp, color = muted)
-                            TextButton(onClick = {
-                                selectedNotes = emptySet()
-                                selectedRestEvent = -1
-                                selectedBarEvent = -1
-                                onSelect(-1, -1)
-                            }) { Text("Clear selection") }
-                        }
-                    }
-        Spacer(Modifier.height(10.dp))
-        Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(12.dp)) {
-            Column(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 2.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    TextButton(onClick = { showFretTools = !showFretTools }, contentPadding = PaddingValues(horizontal = 8.dp, vertical = 2.dp)) {
-                        Text(if (showFretTools) "Fret range & transpose ▴" else "Fret range & transpose ▾")
-                    }
-                }
-                if (showFretTools) {
-                    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text("Fret range", fontSize = 13.sp, color = ink, fontWeight = FontWeight.Medium)
-                        OutlinedTextField(minimumFret, { value ->
-                            minimumFret = value.filter(Char::isDigit).take(2)
-                            applyFretLimitEdit(GroupFretOperation.RAISE_MINIMUM, minimumFret)
-                        }, Modifier.width(84.dp), label = { Text("Min") }, singleLine = true)
-                        Text("to", color = muted)
-                        OutlinedTextField(maximumFret, { value ->
-                            maximumFret = value.filter(Char::isDigit).take(2)
-                            applyFretLimitEdit(GroupFretOperation.LOWER_MAXIMUM, maximumFret)
-                        }, Modifier.width(84.dp), label = { Text("Max") }, singleLine = true)
-                        Text("Transpose song", fontSize = 13.sp, color = ink, fontWeight = FontWeight.Medium)
-                        OutlinedTextField(transposeSemitones, { raw ->
-                            transposeSemitones = raw.filterIndexed { index, char -> char.isDigit() || index == 0 && char == '-' }.take(3)
-                        }, Modifier.width(112.dp), label = { Text("Semitones", maxLines = 1) }, singleLine = true)
-                        Button(
-                            enabled = transposeSemitones.toIntOrNull()?.let { it in -48..48 && it != 0 } == true,
-                            onClick = {
-                                val result = onGroupTransform(GroupFretRequest(GroupFretOperation.TRANSPOSE, minimumFret.toIntOrNull() ?: -1, maximumFret.toIntOrNull() ?: -1, transposeSemitones.toIntOrNull() ?: 999))
-                                groupTransformMessage = result.message
-                                if (result.applied) selectedNotes = emptySet()
-                            }
-                        ) { Text("Transpose") }
-                    }
-                    if (groupTransformMessage.isNotBlank()) {
-                        Text(groupTransformMessage, fontSize = 12.sp, color = if (groupTransformMessage.contains("Could not") || groupTransformMessage.contains("must be") || groupTransformMessage.contains("Select notes")) error else muted)
-                    }
-                }
-            }
-        }
+        if (!phoneLayout) editorActions()
+    }
     }
 }
 
