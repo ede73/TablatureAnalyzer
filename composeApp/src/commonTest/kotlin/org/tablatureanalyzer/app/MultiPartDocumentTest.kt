@@ -52,4 +52,38 @@ class MultiPartDocumentTest {
         assertEquals(listOf("gtr", "bass"), original.selectPart("bass").parts.map { it.id })
         assertEquals(listOf("gtr", "bass"), original.selectPart("bass").selectPart("gtr").parts.map { it.id })
     }
+
+    @Test
+    fun newlyAddedInstrumentSurvivesEditableAndMusicXmlRoundTrips() {
+        val original = TabDocument(
+            tuning = listOf(64, 59, 55, 50, 45, 40),
+            events = listOf(
+                TabEvent(listOf(0, null, null, null, null, null)),
+                TabEvent(listOf(null, 1, null, null, null, null), barAfter = true)
+            )
+        ).addInstrument(TabInstrumentPreset.BASS)
+
+        assertEquals("Bass", original.activePart.name)
+        assertEquals(2, original.activePart.events.size)
+        assertTrue(original.activePart.events.all { it.frets.all { fret -> fret == null } })
+
+        val editableRoundTrip = TabCodec.parseInternal(TabCodec.encodeInternal(original))
+        val musicXmlRoundTrip = MusicXmlCodec.parse(MusicXmlCodec.encode(original))
+        assertEquals("Bass", editableRoundTrip.activePart.name)
+        listOf(editableRoundTrip, musicXmlRoundTrip).forEach { parsed ->
+            assertEquals(listOf("Guitar", "Bass"), parsed.parts.map { it.name })
+            assertEquals(33, parsed.parts[1].midiProgram)
+            assertEquals(2, parsed.parts[1].events.size)
+            assertTrue(parsed.parts[1].events[1].barAfter)
+        }
+    }
+
+    @Test
+    fun changingMidiInstrumentAffectsOnlyTheSelectedPartAndSurvivesExport() {
+        val original = score().updatePart("bass") { it.copy(midiProgram = 80) }
+
+        assertEquals(listOf(24, 80), original.parts.map { it.midiProgram })
+        assertEquals(listOf(24, 80), TabCodec.parseInternal(TabCodec.encodeInternal(original)).parts.map { it.midiProgram })
+        assertEquals(listOf(24, 80), MusicXmlCodec.parse(MusicXmlCodec.encode(original)).parts.map { it.midiProgram })
+    }
 }

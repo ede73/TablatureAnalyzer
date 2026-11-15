@@ -175,7 +175,7 @@ private object DesktopMidiPlayback {
         val melodicChannels = (0..15).filter { it != 9 }.iterator()
         val channels = document.parts.map { part -> if (part.isPercussion) 9 else melodicChannels.next() }
         document.parts.forEachIndexed { index, part ->
-            if (!part.isPercussion) addShort(track, ShortMessage.PROGRAM_CHANGE, channels[index], part.midiProgram.coerceIn(0, 127), 0, 0L)
+            addShort(track, ShortMessage.PROGRAM_CHANGE, channels[index], part.midiProgram.coerceIn(0, 127), 0, 0L)
         }
 
         // Parts have independent event lists. Schedule each from tick zero so a
