@@ -39,7 +39,9 @@ import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -451,12 +453,13 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
     var durationPreview by remember { mutableStateOf<Pair<NotePosition, Int>?>(null) }
     val editorFocusRequester = remember { FocusRequester() }
     val staffScrollState = rememberScrollState()
+    var staffViewportTopInRoot by remember { mutableFloatStateOf(0f) }
+    var staffCanvasTopInRoot by remember { mutableFloatStateOf(0f) }
     val mobileControlsDrawer = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(openControlsRequest) {
         if (phoneLayout && openControlsRequest > 0) mobileControlsDrawer.open()
     }
-    var lastFollowedSystem by remember { mutableIntStateOf(-1) }
     fun applyFretLimitEdit(operation: GroupFretOperation, input: String) {
         val limit = input.toIntOrNull()?.takeIf { it in 0..36 } ?: return
         if (selectedNotes.isEmpty()) return
@@ -679,7 +682,12 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
             colors = CardDefaults.cardColors(containerColor = surface),
             shape = RoundedCornerShape(16.dp)
         ) {
-            Column(Modifier.fillMaxWidth().verticalScroll(staffScrollState).padding(if (document.events.isEmpty()) 10.dp else 16.dp)) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .onGloballyPositioned { staffViewportTopInRoot = it.positionInRoot().y }
+                    .verticalScroll(staffScrollState)
+                    .padding(if (document.events.isEmpty()) 10.dp else 16.dp)
+            ) {
                 if (!phoneLayout) {
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                         NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
@@ -744,28 +752,41 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                         val columnsPerSystem = ((constraints.maxWidth.toFloat() - leftPx - with(density) { 8.dp.toPx() }) / colGapPx).toInt().coerceAtLeast(1)
                         val systems = ((document.events.size + columnsPerSystem - 1) / columnsPerSystem).coerceAtLeast(1)
                         val systemHeight = maxOf(206.dp, 52.dp + 32.dp * (document.tuning.size - 1))
-                        LaunchedEffect(playingEventIndex, columnsPerSystem, systemHeight) {
+                        LaunchedEffect(
+                            playingEventIndex,
+                            columnsPerSystem,
+                            systemHeight,
+                            staffViewportTopInRoot,
+                            staffCanvasTopInRoot,
+                            staffScrollState.viewportSize
+                        ) {
                             val activeSystem = if (playingEventIndex < 0) -1 else (playingEventIndex / columnsPerSystem).coerceIn(0, systems - 1)
-                            if (activeSystem < 0) {
-                                lastFollowedSystem = -1
-                            } else if (activeSystem != lastFollowedSystem) {
-                                lastFollowedSystem = activeSystem
+                            if (activeSystem >= 0 && staffScrollState.viewportSize > 0) {
                                 val systemHeightPx = with(density) { systemHeight.roundToPx() }
-                                val canvasTopPx = with(density) { 52.dp.roundToPx() }
-                                val systemTop = canvasTopPx + activeSystem * systemHeightPx
+                                // Measure the canvas in the actual scroll viewport instead of
+                                // guessing its top offset. The guess differed between desktop,
+                                // tablet, and phone layouts and could leave the playing system
+                                // clipped or fail to scroll at all.
+                                val canvasTopInScrollContent =
+                                    (staffCanvasTopInRoot - staffViewportTopInRoot + staffScrollState.value).roundToInt()
+                                val systemTop = canvasTopInScrollContent + activeSystem * systemHeightPx
                                 val systemBottom = systemTop + systemHeightPx
                                 val viewportTop = staffScrollState.value
                                 val viewportBottom = viewportTop + staffScrollState.viewportSize
-                                val bottomClearance = with(density) { 24.dp.roundToPx() }
+                                val clearance = with(density) { 12.dp.roundToPx() }
                                 val target = when {
-                                    systemTop < viewportTop -> systemTop
-                                    systemBottom > viewportBottom -> systemBottom - staffScrollState.viewportSize + bottomClearance
-                                    else -> viewportTop
-                                }.coerceAtLeast(0)
-                                if (target != viewportTop) staffScrollState.animateScrollTo(target)
+                                    systemTop < viewportTop + clearance -> systemTop - clearance
+                                    systemBottom > viewportBottom - clearance -> systemBottom - staffScrollState.viewportSize + clearance
+                                    else -> null
+                                }?.coerceAtLeast(0)
+                                // Do not animate from a LaunchedEffect keyed by every MIDI event:
+                                // the next note cancels the previous animation before it finishes.
+                                // An immediate correction keeps the currently playing system in view.
+                                if (target != null && target != viewportTop) staffScrollState.scrollTo(target)
                             }
                         }
                         Canvas(Modifier.fillMaxWidth().height(systemHeight * systems)
+                            .onGloballyPositioned { staffCanvasTopInRoot = it.positionInRoot().y }
                             .focusRequester(editorFocusRequester)
                             .focusable()
                             .onKeyEvent { keyEvent ->
