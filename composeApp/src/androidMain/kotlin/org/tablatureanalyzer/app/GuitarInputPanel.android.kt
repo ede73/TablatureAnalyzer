@@ -45,8 +45,8 @@ actual fun GuitarInputPanel(
     onDetectedPitches: (List<Int>, ChordSymbol?) -> Unit
 ) {
     var panelExpanded by remember { mutableStateOf(true) }
-    TextButton(onClick = { panelExpanded = !panelExpanded }) {
-        Text(if (panelExpanded) "Hide guitar input" else "Show guitar input", fontSize = 11.sp)
+    OutlinedButton(onClick = { panelExpanded = !panelExpanded }) {
+        Text(if (panelExpanded) "Collapse guitar input" else "Expand guitar input", fontSize = 11.sp)
     }
     if (panelExpanded) {
     val context = LocalContext.current
