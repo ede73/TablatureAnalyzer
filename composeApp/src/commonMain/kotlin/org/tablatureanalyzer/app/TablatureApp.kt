@@ -51,6 +51,8 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
@@ -234,7 +236,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                             selectedPlaybackRange,
                             playbackResetRequestId
                         ) { eventIndex -> playingEventIndex = eventIndex ?: -1 }
-                        RadioOption("Next-note zoom", upcomingNoteZoomEnabled) {
+                        RadioOption("Preview next note", upcomingNoteZoomEnabled) {
                             upcomingNoteZoomEnabled = !upcomingNoteZoomEnabled
                         }
                     }
@@ -1510,7 +1512,9 @@ private fun EditorPage(
 @Composable
 private fun RadioOption(label: String, selected: Boolean, onClick: () -> Unit) {
     Row(
-        Modifier.height(32.dp).selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
+        Modifier.height(32.dp)
+            .semantics { contentDescription = label }
+            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp)
     ) {
