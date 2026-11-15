@@ -42,6 +42,8 @@ import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -700,6 +702,8 @@ private fun EditorPage(
     var durationPreview by remember { mutableStateOf<Pair<NotePosition, Int>?>(null) }
     val editorFocusRequester = remember { FocusRequester() }
     val staffScrollState = rememberScrollState()
+    var staffViewportTopOnScreen by remember { mutableFloatStateOf(0f) }
+    var staffCanvasTopOnScreen by remember { mutableFloatStateOf(0f) }
     val anticipationGlow = remember { Animatable(0f) }
     val nextPlaybackEventIndex = remember(document.events, playingEventIndex) {
         if (playingEventIndex < 0) -1 else
@@ -944,7 +948,12 @@ private fun EditorPage(
             colors = CardDefaults.cardColors(containerColor = surface),
             shape = RoundedCornerShape(16.dp)
         ) {
-            Column(Modifier.fillMaxWidth().verticalScroll(staffScrollState).padding(if (document.events.isEmpty()) 10.dp else 16.dp)) {
+            Column(
+            Modifier.fillMaxWidth()
+                .verticalScroll(staffScrollState)
+                .onGloballyPositioned { staffViewportTopOnScreen = it.positionInRoot().y }
+                .padding(if (document.events.isEmpty()) 10.dp else 16.dp)
+            ) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                     PartSelector(document, onSelectPart, onAddPart, onSetPartProgram)
                     if (!phoneLayout) {
@@ -1003,7 +1012,11 @@ private fun EditorPage(
                             }
                         }
                 } else {
-                    BoxWithConstraints(Modifier.fillMaxWidth()) {
+                    BoxWithConstraints(
+                        Modifier.fillMaxWidth().onGloballyPositioned {
+                            staffCanvasTopOnScreen = it.positionInRoot().y
+                        }
+                    ) {
                         val density = LocalDensity.current
                         val colGapPx = with(density) { 62.dp.toPx() }
                         val leftPx = with(density) { 38.dp.toPx() }
@@ -1017,18 +1030,20 @@ private fun EditorPage(
                             } else if (activeSystem != lastFollowedSystem) {
                                 lastFollowedSystem = activeSystem
                                 val systemHeightPx = with(density) { systemHeight.roundToPx() }
-                                val canvasTopPx = with(density) { 52.dp.roundToPx() }
-                                val systemTop = canvasTopPx + activeSystem * systemHeightPx
-                                val systemBottom = systemTop + systemHeightPx
-                                val viewportTop = staffScrollState.value
-                                val viewportBottom = viewportTop + staffScrollState.viewportSize
+                                val currentScroll = staffScrollState.value
+                                val viewportTop = staffViewportTopOnScreen
+                                val systemTopOnScreen = staffCanvasTopOnScreen + activeSystem * systemHeightPx
+                                val systemTopInViewport = systemTopOnScreen - viewportTop
+                                val systemBottomInViewport = systemTopInViewport + systemHeightPx
+                                val viewportHeight = staffScrollState.viewportSize.toFloat()
                                 val bottomClearance = with(density) { 24.dp.roundToPx() }
-                                val target = when {
-                                    systemTop < viewportTop -> systemTop
-                                    systemBottom > viewportBottom -> systemBottom - staffScrollState.viewportSize + bottomClearance
-                                    else -> viewportTop
-                                }.coerceAtLeast(0)
-                                if (target != viewportTop) staffScrollState.animateScrollTo(target)
+                                val delta = when {
+                                    systemTopInViewport < 0f -> systemTopInViewport
+                                    systemBottomInViewport > viewportHeight -> systemBottomInViewport - viewportHeight + bottomClearance
+                                    else -> 0f
+                                }
+                                val target = (currentScroll + delta.roundToInt()).coerceIn(0, staffScrollState.maxValue)
+                                if (target != currentScroll) staffScrollState.animateScrollTo(target)
                             }
                         }
                         Canvas(Modifier.fillMaxWidth().height(systemHeight * systems)
