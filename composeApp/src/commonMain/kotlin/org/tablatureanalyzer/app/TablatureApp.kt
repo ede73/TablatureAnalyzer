@@ -254,7 +254,16 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
             if (!phoneLayout) editorHeader()
             Spacer(Modifier.height(6.dp))
             if (page == 0) {
-                EditorPage(document, selectedEvent, selectedString, playingEventIndex, playheadEventIndex, historyResetRequestId, tabNaming, tabNamingOverride, { tabNamingOverride = it }, phoneLayout, openTabControlsRequest, editorHeader, onSetPlaybackStart = { playheadEventIndex = it }, onPlaybackSelectionChanged = { selectedPlaybackRange = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
+                EditorPage(document, selectedEvent, selectedString, playingEventIndex, playheadEventIndex, historyResetRequestId, tabNaming, tabNamingOverride, { tabNamingOverride = it }, phoneLayout, openTabControlsRequest, editorHeader, onSelectPart = { partId ->
+                    if (partId != document.activePart.id) {
+                        document = document.selectPart(partId)
+                        selectedEvent = -1
+                        selectedString = -1
+                        selectedPlaybackRange = null
+                        playheadEventIndex = 0
+                        historyResetRequestId += 1
+                    }
+                }, onSetPlaybackStart = { playheadEventIndex = it }, onPlaybackSelectionChanged = { selectedPlaybackRange = it }, onSelect = { e, s -> selectedEvent = e; selectedString = s }, onMove = { event, from, target ->
                     val updated = moveNote(document, event, from, target)
                     if (updated != document) {
                         updateDocument(updated)
@@ -398,8 +407,24 @@ private fun NamingSelector(
 }
 
 @Composable
+private fun PartSelector(document: TabDocument, onSelect: (String) -> Unit) {
+    if (document.parts.size < 2) return
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        TextButton(onClick = { expanded = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+            Text("Part: ${document.activePart.name} ▾", fontSize = 11.sp, maxLines = 1)
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            document.parts.forEach { part ->
+                DropdownMenuItem(text = { Text(part.name) }, onClick = { onSelect(part.id); expanded = false })
+            }
+        }
+    }
+}
+
+@Composable
 @OptIn(ExperimentalLayoutApi::class)
-private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, phoneLayout: Boolean, openControlsRequest: Int, globalControls: @Composable () -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
+private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString: Int, playingEventIndex: Int, playheadEventIndex: Int, historyResetRequestId: Int, naming: ChordNamingSystem, namingOverride: ChordNamingSystem?, onNamingOverride: (ChordNamingSystem?) -> Unit, phoneLayout: Boolean, openControlsRequest: Int, globalControls: @Composable () -> Unit, onSelectPart: (String) -> Unit, onSetPlaybackStart: (Int) -> Unit, onPlaybackSelectionChanged: (IntRange?) -> Unit, onSelect: (Int, Int) -> Unit, onMove: (Int, Int, Int) -> Unit, onSetFret: (Int, Int, Int) -> Unit, onMoveDirection: (Set<NotePosition>, Int) -> Set<NotePosition>, onAdd: (Int, Int, Int, Int) -> Unit, onSetLength: (Set<NotePosition>, Int) -> Unit, onConvertToRest: (Set<Int>) -> Unit, onRemoveRest: (Int) -> Unit, onSetRestLength: (Int, Int) -> Unit, onRemoveBar: (Int) -> Unit, onAddBar: (Int) -> Unit, onAddRepeatStart: (Int) -> Unit, onAddRepeatEnd: (Int) -> Unit, onAdjustRepeatCount: (Int, Int) -> Unit, onMoveBar: (Int, Int) -> Boolean, onDelete: () -> Unit, onGroupTransform: (GroupFretRequest) -> GroupFretResult) {
     val textMeasurer = rememberTextMeasurer()
     var dragTargetString by remember { mutableIntStateOf(-1) }
     var dragTargetFret by remember { mutableIntStateOf(-1) }
@@ -680,10 +705,13 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
             shape = RoundedCornerShape(16.dp)
         ) {
             Column(Modifier.fillMaxWidth().verticalScroll(staffScrollState).padding(if (document.events.isEmpty()) 10.dp else 16.dp)) {
-                if (!phoneLayout) {
+                if (document.parts.size > 1 || !phoneLayout) {
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
-                        NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
-                        Text("Click empty position to set play start · select notes to loop · drag up/down: string · left/right: fret", fontSize = 12.sp, color = muted)
+                        PartSelector(document, onSelectPart)
+                        if (!phoneLayout) {
+                            NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
+                            Text("Click empty position to set play start · select notes to loop · drag up/down: string · left/right: fret", fontSize = 12.sp, color = muted)
+                        }
                     }
                 }
                 Spacer(Modifier.height(if (document.events.isEmpty()) 4.dp else 12.dp))

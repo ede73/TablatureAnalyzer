@@ -163,50 +163,81 @@ private object DesktopMidiPlayback {
     private var sequencer: javax.sound.midi.Sequencer? = null
     private var output: DesktopMidiOutput? = null
 
+    private data class ScheduledSlot(val eventIndex: Int, val startTick: Long, val endTick: Long)
+
     @Synchronized
     fun play(document: TabDocument, speedPercent: Int, onEvent: (Int?) -> Unit, eventRange: IntRange? = null, loopCount: Int = 0) {
         stop()
         val nextSequencer = MidiSystem.getSequencer(false) ?: error("No MIDI sequencer is available.")
         val sequence = Sequence(Sequence.PPQ, PPQ)
         val track = sequence.createTrack()
-        addShort(track, ShortMessage.PROGRAM_CHANGE, 0, 24, 0, 0L) // Nylon-string guitar
-
-        val tempoByEvent = document.tempoChanges.filter { it.eventIndex >= 0 }
-            .groupBy { it.eventIndex.coerceAtMost(document.events.size) }
-        val signatureByEvent = document.timeSignatures.filter { it.eventIndex >= 0 }
-            .groupBy { it.eventIndex.coerceAtMost(document.events.size) }
-        var tick = 0L
-
-        // A playback range starts its MIDI sequence at tick zero, so carry forward
-        // the most recent tempo change that happened before the range begins.
-        eventRange?.first?.let { rangeStart ->
-            document.tempoChanges
-                .filter { it.eventIndex in 0 until rangeStart }
-                .maxByOrNull { it.eventIndex }
-                ?.let { addTempo(track, it.beatsPerMinute, tick) }
+        require(document.parts.size <= 15) { "MIDI playback supports up to 15 instrument parts." }
+        val channels = document.parts.indices.map { index -> if (index < 9) index else index + 1 }
+        document.parts.forEachIndexed { index, part ->
+            addShort(track, ShortMessage.PROGRAM_CHANGE, channels[index], part.midiProgram.coerceIn(0, 127), 0, 0L)
         }
 
-        playbackEventIndices(document.events).filter { eventIndex -> eventRange == null || eventIndex in eventRange }.forEach { eventIndex ->
-            val event = document.events[eventIndex]
-            addMarker(track, "TAB_EVENT:$eventIndex", tick)
-            tempoByEvent[eventIndex].orEmpty().forEach { addTempo(track, it.beatsPerMinute, tick) }
-            signatureByEvent[eventIndex].orEmpty().forEach { addTimeSignature(track, it.beats, it.beatType, tick) }
-            val soundedDurations = if (event.restDurationUnits != null) emptyList() else event.frets.indices.mapNotNull { string ->
-                val fret = event.frets[string] ?: return@mapNotNull null
-                val midiPitch = document.tuning.getOrNull(string)?.plus(fret)?.coerceIn(0, 127) ?: return@mapNotNull null
-                val units = event.durationUnits.getOrNull(string)
-                    ?: event.lengthCodes.getOrNull(string)?.let(::legacyDurationUnits)
-                    ?: document.divisions.coerceAtLeast(1)
-                val durationTicks = (units.toDouble() * PPQ / document.divisions.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
-                addShort(track, ShortMessage.NOTE_ON, 0, midiPitch, 88, tick)
-                addShort(track, ShortMessage.NOTE_OFF, 0, midiPitch, 0, tick + durationTicks)
-                durationTicks
-            }
-            val restTicks = event.restDurationUnits?.let { (it.toDouble() * PPQ / document.divisions.coerceAtLeast(1)).toLong().coerceAtLeast(1L) }
-            tick += soundedDurations.maxOrNull() ?: restTicks ?: PPQ.toLong()
+        // Parts have independent event lists. Schedule each from tick zero so a
+        // guitar and bass line can have different note counts without truncation.
+        val timelinePart = document.activePart
+        val schedules = document.parts.map(::schedulePart)
+        val activePartIndex = document.parts.indexOfFirst { it.id == timelinePart.id }.coerceAtLeast(0)
+        val activeSchedule = schedules[activePartIndex]
+        val selectedSlots = eventRange?.let { range -> activeSchedule.filter { it.eventIndex in range } }
+        val rangeStartTick = selectedSlots?.firstOrNull()?.startTick ?: 0L
+        val rangeEndTick = if (eventRange != null) {
+            selectedSlots?.lastOrNull()?.endTick ?: 0L
+        } else {
+            schedules.maxOfOrNull { it.lastOrNull()?.endTick ?: 0L } ?: 0L
         }
-        tempoByEvent[document.events.size].orEmpty().forEach { addTempo(track, it.beatsPerMinute, tick) }
-        signatureByEvent[document.events.size].orEmpty().forEach { addTimeSignature(track, it.beats, it.beatType, tick) }
+
+        eventRange?.let { range ->
+            val priorTempo = activeSchedule.lastOrNull { it.eventIndex < range.first }
+                ?.let { slot -> timelinePart.tempoChanges.lastOrNull { it.eventIndex == slot.eventIndex } }
+                ?: timelinePart.tempoChanges.filter { it.eventIndex < range.first }.maxByOrNull { it.eventIndex }
+            priorTempo?.let { addTempo(track, it.beatsPerMinute, 0L) }
+            val priorSignature = activeSchedule.lastOrNull { it.eventIndex < range.first }
+                ?.let { slot -> timelinePart.timeSignatures.lastOrNull { it.eventIndex == slot.eventIndex } }
+                ?: timelinePart.timeSignatures.filter { it.eventIndex < range.first }.maxByOrNull { it.eventIndex }
+            priorSignature?.let { addTimeSignature(track, it.beats, it.beatType, 0L) }
+        }
+
+        schedules.forEachIndexed { partIndex, schedule ->
+            val part = document.parts[partIndex]
+            schedule.filter { slot -> slot.startTick < rangeEndTick && slot.endTick > rangeStartTick }
+                .forEach { slot ->
+                    val event = part.events[slot.eventIndex]
+                    val eventStart = maxOf(slot.startTick, rangeStartTick)
+                    if (partIndex == activePartIndex && (eventRange == null || eventRange.contains(slot.eventIndex))) {
+                        addMarker(track, "TAB_EVENT:${slot.eventIndex}", eventStart - rangeStartTick)
+                    }
+                    if (event.restDurationUnits != null) return@forEach
+                    event.frets.indices.forEach { string ->
+                        val fret = event.frets[string] ?: return@forEach
+                        val midiPitch = part.tuning.getOrNull(string)?.plus(fret)?.coerceIn(0, 127) ?: return@forEach
+                        val units = event.durationUnits.getOrNull(string)
+                            ?: event.lengthCodes.getOrNull(string)?.let(::legacyDurationUnits)
+                            ?: part.divisions.coerceAtLeast(1)
+                        val durationTicks = (units.toDouble() * PPQ / part.divisions.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
+                        val noteStart = maxOf(slot.startTick, rangeStartTick) - rangeStartTick
+                        val noteEnd = minOf(slot.startTick + durationTicks, rangeEndTick) - rangeStartTick
+                        if (noteEnd > noteStart) {
+                            addShort(track, ShortMessage.NOTE_ON, channels[partIndex], midiPitch, 88, noteStart)
+                            addShort(track, ShortMessage.NOTE_OFF, channels[partIndex], midiPitch, 0, noteEnd)
+                        }
+                    }
+                }
+        }
+
+        val activeWindow = activeSchedule.filter { slot -> slot.startTick < rangeEndTick && slot.endTick > rangeStartTick }
+        activeWindow.forEach { slot ->
+            val offsetTick = maxOf(slot.startTick, rangeStartTick) - rangeStartTick
+            timelinePart.tempoChanges.filter { it.eventIndex == slot.eventIndex }.forEach { addTempo(track, it.beatsPerMinute, offsetTick) }
+            timelinePart.timeSignatures.filter { it.eventIndex == slot.eventIndex }.forEach { addTimeSignature(track, it.beats, it.beatType, offsetTick) }
+        }
+        val tick = (rangeEndTick - rangeStartTick).coerceAtLeast(1L)
+        timelinePart.tempoChanges.lastOrNull { it.eventIndex >= timelinePart.events.size }?.let { addTempo(track, it.beatsPerMinute, tick) }
+        timelinePart.timeSignatures.lastOrNull { it.eventIndex >= timelinePart.events.size }?.let { addTimeSignature(track, it.beats, it.beatType, tick) }
         val endMarker = MetaMessage()
         val markerText = "End of tab".encodeToByteArray()
         endMarker.setMessage(0x06, markerText, markerText.size)
@@ -255,6 +286,25 @@ private object DesktopMidiPlayback {
         }
         sequencer = nextSequencer
         nextSequencer.start()
+    }
+
+    private fun schedulePart(part: TabPart): List<ScheduledSlot> {
+        var tick = 0L
+        return playbackEventIndices(part.events).map { eventIndex ->
+            val event = part.events[eventIndex]
+            val duration = if (event.restDurationUnits != null) {
+                (event.restDurationUnits.toDouble() * PPQ / part.divisions.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
+            } else {
+                event.frets.indices.mapNotNull { string ->
+                    if (event.frets[string] == null) return@mapNotNull null
+                    val units = event.durationUnits.getOrNull(string)
+                        ?: event.lengthCodes.getOrNull(string)?.let(::legacyDurationUnits)
+                        ?: part.divisions.coerceAtLeast(1)
+                    (units.toDouble() * PPQ / part.divisions.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
+                }.maxOrNull() ?: PPQ.toLong()
+            }
+            ScheduledSlot(eventIndex, tick, tick + duration).also { tick += duration }
+        }
     }
 
     @Synchronized
