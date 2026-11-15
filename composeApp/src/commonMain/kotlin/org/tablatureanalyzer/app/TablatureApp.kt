@@ -414,24 +414,37 @@ private fun NamingSelector(
 
 @Composable
 private fun PartSelector(document: TabDocument, onSelect: (String) -> Unit, onAdd: (TabInstrumentPreset) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        TextButton(onClick = { expanded = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
-            Text("Part: ${document.activePart.name} ▾", fontSize = 11.sp, maxLines = 1)
-        }
-        DropdownMenu(expanded, onDismissRequest = { expanded = false }) {
-            document.parts.forEach { part ->
-                DropdownMenuItem(
-                    text = { Text(part.name) },
-                    onClick = { onSelect(part.id); expanded = false }
-                )
+    var partsExpanded by remember { mutableStateOf(false) }
+    var addExpanded by remember { mutableStateOf(false) }
+    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        if (document.parts.size > 1) {
+            Box {
+                TextButton(onClick = { partsExpanded = true }, contentPadding = PaddingValues(horizontal = 6.dp, vertical = 0.dp)) {
+                    Text("Part: ${document.activePart.name} ▾", fontSize = 11.sp, maxLines = 1)
+                }
+                DropdownMenu(partsExpanded, onDismissRequest = { partsExpanded = false }) {
+                    document.parts.forEach { part ->
+                        DropdownMenuItem(
+                            text = { Text(part.name) },
+                            onClick = { onSelect(part.id); partsExpanded = false }
+                        )
+                    }
+                }
             }
-            HorizontalDivider()
-            TabInstrumentPreset.values().forEach { preset ->
-                DropdownMenuItem(
-                    text = { Text("Add ${preset.displayName}") },
-                    onClick = { onAdd(preset); expanded = false }
-                )
+        } else {
+            Text("Part: ${document.activePart.name}", fontSize = 11.sp, color = muted, maxLines = 1)
+        }
+        Box {
+            OutlinedButton(onClick = { addExpanded = true }, contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)) {
+                Text("+ Add instrument", fontSize = 11.sp, maxLines = 1)
+            }
+            DropdownMenu(addExpanded, onDismissRequest = { addExpanded = false }) {
+                TabInstrumentPreset.values().forEach { preset ->
+                    DropdownMenuItem(
+                        text = { Text(preset.displayName) },
+                        onClick = { onAdd(preset); addExpanded = false }
+                    )
+                }
             }
         }
     }
