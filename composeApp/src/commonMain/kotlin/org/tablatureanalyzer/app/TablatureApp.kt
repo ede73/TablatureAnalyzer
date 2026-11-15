@@ -1152,7 +1152,9 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         val normalRadius = 14.dp.toPx()
                                         val radius = when {
                                             isPlaying -> 22.dp.toPx()
-                                            isNextToPlay -> 17.dp.toPx()
+                                            // Grow the upcoming fret during the current note so its
+                                            // number is readable at a glance on narrow phone screens.
+                                            isNextToPlay -> (18f + anticipationGlow.value * 10f).dp.toPx()
                                             else -> normalRadius
                                         }
                                         val noteFill = when {
@@ -1175,11 +1177,16 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         }
                                         drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
                                         drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (isPlaying || selected || fretPreview) 3.dp.toPx() else 1.8.dp.toPx()))
-                                        val labelFontSize = if (isPlaying) 17.sp else if (isNextToPlay) 12.sp else 11.sp
+                                        val labelFontSize = when {
+                                            isPlaying -> 17.sp
+                                            isNextToPlay -> (14f + anticipationGlow.value * 7f).sp
+                                            else -> 11.sp
+                                        }
                                         val labelHalfWidth = when {
                                             noteLabel.length > 2 && isPlaying -> 14.dp.toPx()
                                             noteLabel.length > 2 -> 11.dp.toPx()
                                             isPlaying -> 6.dp.toPx()
+                                            isNextToPlay -> 8.dp.toPx()
                                             else -> 5.dp.toPx()
                                         }
                                         drawText(textMeasurer, noteLabel, Offset(x - labelHalfWidth, y - if (isPlaying) 11.dp.toPx() else 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = labelFontSize, fontWeight = FontWeight.Bold))
