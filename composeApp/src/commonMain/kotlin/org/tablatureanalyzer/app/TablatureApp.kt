@@ -1884,12 +1884,24 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
         selectedScaleChord?.let { database.find(tuning, it) }.orEmpty()
     }
     val mainOctaveRoot = remember(tuning, key) {
-        tuning.flatMapIndexed { string, openPitch ->
-            (0..12).mapNotNull { fret ->
+        var lowest: Triple<Int, Int, Int>? = null
+        for (string in tuning.indices) {
+            val openPitch = tuning[string]
+            for (fret in 0..12) {
                 val pitch = openPitch + fret
-                if (((pitch % 12) + 12) % 12 == key) Triple(pitch, string, fret) else null
+                if (((pitch % 12) + 12) % 12 == key) {
+                    val current = lowest
+                    if (
+                        current == null || pitch < current.first ||
+                        (pitch == current.first && fret < current.third) ||
+                        (pitch == current.first && fret == current.third && string < current.second)
+                    ) {
+                        lowest = Triple(pitch, string, fret)
+                    }
+                }
             }
-        }.minWithOrNull(compareBy<Triple<Int, Int, Int>> { it.first }.thenBy { it.third }.thenBy { it.second })
+        }
+        lowest
     }
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Card(colors = CardDefaults.cardColors(containerColor = surface), shape = RoundedCornerShape(16.dp)) {
