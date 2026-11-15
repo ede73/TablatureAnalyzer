@@ -28,8 +28,21 @@ data class TabPart(
     val midiProgram: Int = 24,
     val divisions: Int = 480,
     val tempoChanges: List<TabTempoChange> = listOf(TabTempoChange(0, 120)),
-    val timeSignatures: List<TabTimeSignatureChange> = listOf(TabTimeSignatureChange(0, 4, 4))
+    val timeSignatures: List<TabTimeSignatureChange> = listOf(TabTimeSignatureChange(0, 4, 4)),
+    val isPercussion: Boolean = false
 )
+
+enum class TabInstrumentPreset(
+    val displayName: String,
+    val tuning: List<Int>,
+    val midiProgram: Int,
+    val isPercussion: Boolean = false,
+    val stringLabels: List<String>? = null
+) {
+    GUITAR("Guitar", listOf(64, 59, 55, 50, 45, 40), 24),
+    BASS("Bass", listOf(43, 38, 33, 28), 33),
+    DRUM_KIT("Drum kit", listOf(51, 49, 46, 42, 38, 36), 0, true, listOf("Ride", "Crash", "Open HH", "Hi-hat", "Snare", "Kick"))
+}
 
 /**
  * A score with a currently visible/editable part and any other synchronized parts.
@@ -88,6 +101,42 @@ data class TabDocument(
         return TabDocument(selected, changed.filterNot { it.id == selected.id }, partOrder)
     }
 
+    fun addInstrument(preset: TabInstrumentPreset): TabDocument {
+        val existingNames = parts.map { it.name }.toSet()
+        val baseName = preset.displayName
+        val name = if (baseName !in existingNames) baseName else generateSequence(2) { it + 1 }
+            .map { "$baseName $it" }.first { it !in existingNames }
+        val id = generateSequence(parts.size + 1) { it + 1 }.map { "part-$it" }.first { candidate -> parts.none { it.id == candidate } }
+        val alignedEvents = activePart.events.map { source ->
+            val duration = if (source.restDurationUnits != null) source.restDurationUnits else source.frets.indices.mapNotNull { string ->
+                if (source.frets[string] == null) null
+                else source.durationUnits.getOrNull(string)
+                    ?: source.lengthCodes.getOrNull(string)?.let { durationUnitsForLengthCode(it, activePart.divisions) }
+                    ?: activePart.divisions
+            }.maxOrNull() ?: activePart.divisions
+            TabEvent(
+                frets = List(preset.tuning.size) { null },
+                barAfter = source.barAfter,
+                durationUnits = List(preset.tuning.size) { duration },
+                repeatStartBefore = source.repeatStartBefore,
+                repeatEndAfter = source.repeatEndAfter,
+                repeatCount = source.repeatCount
+            )
+        }
+        val newPart = TabPart(
+            id = id,
+            name = name,
+            tuning = preset.tuning,
+            events = alignedEvents,
+            midiProgram = preset.midiProgram,
+            divisions = activePart.divisions,
+            tempoChanges = activePart.tempoChanges,
+            timeSignatures = activePart.timeSignatures,
+            isPercussion = preset.isPercussion
+        )
+        return fromParts(parts + newPart, newPart.id)
+    }
+
     fun withTempoChanges(changes: List<TabTempoChange>): TabDocument = fromParts(
         parts.map { it.copy(tempoChanges = changes) }, activePart.id
     )
@@ -119,7 +168,7 @@ object TabCodec {
 
     /** Imports the original application's lossless, editable text format. */
     fun parseInternal(source: String): TabDocument {
-        if (source.lineSequence().firstOrNull()?.trim() == "#Internalstatesavefile 0.4") {
+        if (source.lineSequence().firstOrNull()?.trim() in setOf("#Internalstatesavefile 0.4", "#Internalstatesavefile 0.5")) {
             return parseMultiPartInternal(source)
         }
         return parseSinglePartInternal(source)
@@ -134,7 +183,7 @@ object TabCodec {
         fun finishPart() {
             val metadata = currentMetadata ?: return
             val decoded = metadata.map(::decodeProjectField)
-            require(decoded.size == 3) { "Invalid editable-project part header." }
+            require(decoded.size in 3..4) { "Invalid editable-project part header." }
             val id = decoded[0]
             val name = decoded[1]
             val midiProgram = decoded[2].toIntOrNull()?.coerceIn(0, 127) ?: 24
@@ -143,7 +192,7 @@ object TabCodec {
                 currentContent.forEach(::appendLine)
             }
             val parsed = parseSinglePartInternal(legacySource).activePart
-            parts += parsed.copy(id = id, name = name, midiProgram = midiProgram)
+            parts += parsed.copy(id = id, name = name, midiProgram = midiProgram, isPercussion = decoded.getOrNull(3)?.toBooleanStrictOrNull() ?: false)
             currentMetadata = null
             currentContent = mutableListOf()
         }
@@ -210,6 +259,13 @@ object TabCodec {
                     if (values.size >= 2 && values[0] in events.indices) {
                         val index = values[0]
                         events[index] = events[index].copy(restDurationUnits = values[1].coerceAtLeast(1))
+                    }
+                }
+                line.startsWith("#slot-duration ") -> {
+                    val values = line.substringAfter(' ').split(',').mapNotNull(String::toIntOrNull)
+                    if (values.size >= 2 && values[0] in events.indices) {
+                        val index = values[0]
+                        events[index] = events[index].copy(durationUnits = List(strings) { values[1].coerceAtLeast(1) })
                     }
                 }
                 line.startsWith("#repeat-start ") -> {
@@ -320,10 +376,10 @@ object TabCodec {
 
     /** Writes all parts so notes, instruments, timing and tuning survive an editable-project round trip. */
     fun encodeInternal(document: TabDocument): String = buildString {
-        appendLine("#Internalstatesavefile 0.4")
+        appendLine("#Internalstatesavefile 0.5")
         appendLine("#active ${encodeProjectField(document.activePart.id)}")
         document.parts.forEach { part ->
-            appendLine("#part ${encodeProjectField(part.id)}\t${encodeProjectField(part.name)}\t${part.midiProgram.coerceIn(0, 127)}")
+            appendLine("#part ${encodeProjectField(part.id)}\t${encodeProjectField(part.name)}\t${part.midiProgram.coerceIn(0, 127)}\t${part.isPercussion}")
             appendLine("#strings ${part.tuning.size}")
             appendLine("#tuning ${part.tuning.joinToString(",")}")
             appendLine("#divisions ${part.divisions.coerceAtLeast(1)}")
@@ -338,6 +394,9 @@ object TabCodec {
                     }
                 }
                 if (notes.isEmpty()) appendLine("#event") else appendLine(notes.joinToString("+"))
+                if (notes.isEmpty() && event.restDurationUnits == null) {
+                    event.durationUnits.filterNotNull().maxOrNull()?.let { appendLine("#slot-duration $eventIndex,${it.coerceAtLeast(1)}") }
+                }
                 event.restDurationUnits?.let { appendLine("#rest $eventIndex,${it.coerceAtLeast(1)}") }
                 if (event.repeatStartBefore) appendLine("#repeat-start $eventIndex")
                 if (event.repeatEndAfter) appendLine("#repeat-end $eventIndex,${event.repeatCount.coerceIn(2, 16)}")
@@ -403,7 +462,8 @@ fun addNoteAt(document: TabDocument, eventIndex: Int, stringIndex: Int, fret: In
         frets[stringIndex] = fret
         actions[stringIndex] = null
         lengths[stringIndex] = lengthCode
-        durations[stringIndex] = null
+        durations[stringIndex] = existing.durationUnits.getOrNull(stringIndex)
+            ?: existing.durationUnits.filterNotNull().maxOrNull()
         events[index] = existing.copy(frets = frets, actions = actions, lengthCodes = lengths, durationUnits = durations, restDurationUnits = null)
     } else {
         val frets = MutableList<Int?>(document.tuning.size) { null }.also { it[stringIndex] = fret }

@@ -6,7 +6,7 @@ object MusicXmlCodec {
     private const val DEFAULT_DURATION = OUTPUT_DIVISIONS
 
     fun encode(document: TabDocument): String {
-        require(document.parts.size <= 15) { "MusicXML MIDI playback metadata supports at most 15 instrument parts." }
+        require(document.parts.count { !it.isPercussion } <= 15) { "MusicXML MIDI metadata supports at most 15 pitched instrument parts." }
         val sb = StringBuilder()
         sb.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"no\"?>\n")
         sb.append("<score-partwise version=\"4.0\">\n")
@@ -17,7 +17,7 @@ object MusicXmlCodec {
             val id = "P${index + 1}"
             sb.append("    <score-part id=\"").append(id).append("\"><part-name>")
                 .append(xmlEscape(part.name)).append("</part-name><midi-instrument id=\"").append(id)
-                .append("-I1\"><midi-channel>").append(midiChannel(index))
+                .append("-I1\"><midi-channel>").append(midiChannel(index, document.parts))
                 .append("</midi-channel><midi-program>").append(part.midiProgram.coerceIn(0, 127) + 1)
                 .append("</midi-program></midi-instrument></score-part>\n")
         }
@@ -130,13 +130,14 @@ object MusicXmlCodec {
             val scorePart = scoreParts.firstOrNull { it.attributes["id"] == id }
             val name = scorePart?.child("part-name")?.textValue()?.ifBlank { null } ?: "Part ${index + 1}"
             val program = scorePart?.descendants("midi-program")?.firstOrNull()?.intText()?.minus(1)?.coerceIn(0, 127) ?: 24
-            parsePart(partNode, id, name, program)
+            val percussion = scorePart?.descendants("midi-channel")?.firstOrNull()?.intText() == 10
+            parsePart(partNode, id, name, program, percussion)
         }
         require(parts.isNotEmpty()) { "MusicXML document has no part" }
         return TabDocument.fromParts(parts)
     }
 
-    private fun parsePart(part: XmlNode, id: String, name: String, program: Int): TabPart {
+    private fun parsePart(part: XmlNode, id: String, name: String, program: Int, percussion: Boolean): TabPart {
         var divisions = OUTPUT_DIVISIONS
         var sourceTime = TabTimeSignatureChange(0, 4, 4)
         var tuning = listOf(64, 59, 55, 50, 45, 40)
@@ -236,7 +237,7 @@ object MusicXmlCodec {
 
         val normalizedSignatures = signatures.distinctBy { it.eventIndex }.ifEmpty { listOf(TabTimeSignatureChange(0, 4, 4)) }
         val normalizedTempos = tempos.distinctBy { it.eventIndex }.ifEmpty { listOf(TabTempoChange(0, 120)) }
-        return TabPart(id, name, tuning, events, program, OUTPUT_DIVISIONS, normalizedTempos, normalizedSignatures)
+        return TabPart(id, name, tuning, events, program, OUTPUT_DIVISIONS, normalizedTempos, normalizedSignatures, percussion)
     }
 
     private data class MutableEvent(val frets: MutableList<Int?>, val actions: MutableList<Char?> = MutableList(frets.size) { null }, val lengthCodes: MutableList<Int?> = MutableList(frets.size) { null }, val durationUnits: MutableList<Int?> = MutableList(frets.size) { null }, var restDuration: Int? = null) {
@@ -314,7 +315,11 @@ object MusicXmlCodec {
         return Triple(names[pitchClass], alters[pitchClass], midi / 12 - 1)
     }
 
-    private fun midiChannel(partIndex: Int): Int = if (partIndex < 9) partIndex + 1 else partIndex + 2
+    private fun midiChannel(partIndex: Int, parts: List<TabPart>): Int {
+        if (parts[partIndex].isPercussion) return 10
+        val melodicIndex = parts.take(partIndex).count { !it.isPercussion }
+        return if (melodicIndex < 9) melodicIndex + 1 else melodicIndex + 2
+    }
 
     private fun pitchValue(step: String, alter: Int, octave: Int): Int {
         val pitchClass = when (step) { "C" -> 0; "D" -> 2; "E" -> 4; "F" -> 5; "G" -> 7; "A" -> 9; "B" -> 11; else -> 0 }

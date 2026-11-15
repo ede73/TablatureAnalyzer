@@ -171,10 +171,11 @@ private object DesktopMidiPlayback {
         val nextSequencer = MidiSystem.getSequencer(false) ?: error("No MIDI sequencer is available.")
         val sequence = Sequence(Sequence.PPQ, PPQ)
         val track = sequence.createTrack()
-        require(document.parts.size <= 15) { "MIDI playback supports up to 15 instrument parts." }
-        val channels = document.parts.indices.map { index -> if (index < 9) index else index + 1 }
+        require(document.parts.count { !it.isPercussion } <= 15) { "MIDI playback supports up to 15 pitched instrument parts." }
+        val melodicChannels = (0..15).filter { it != 9 }.iterator()
+        val channels = document.parts.map { part -> if (part.isPercussion) 9 else melodicChannels.next() }
         document.parts.forEachIndexed { index, part ->
-            addShort(track, ShortMessage.PROGRAM_CHANGE, channels[index], part.midiProgram.coerceIn(0, 127), 0, 0L)
+            if (!part.isPercussion) addShort(track, ShortMessage.PROGRAM_CHANGE, channels[index], part.midiProgram.coerceIn(0, 127), 0, 0L)
         }
 
         // Parts have independent event lists. Schedule each from tick zero so a
