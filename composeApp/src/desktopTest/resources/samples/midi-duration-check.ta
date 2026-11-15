@@ -1,0 +1,13 @@
+#Internalstatesavefile 0.3
+#strings 6
+#tuning 64,59,55,50,45,40
+#divisions 480
+#tempo 0,120
+#time 0,4,4
+# Four quarter notes followed by two half notes; all on the low E string.
+0,5,5,-,480
+2,5,5,-,480
+3,5,5,-,480
+5,5,5,-,480
+7,5,3,-,960
+8,5,3,-,960

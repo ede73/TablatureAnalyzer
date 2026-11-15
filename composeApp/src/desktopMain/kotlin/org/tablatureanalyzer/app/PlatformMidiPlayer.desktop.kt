@@ -158,8 +158,96 @@ private fun selectedNoteContextRange(document: TabDocument, selectedEvent: Int):
     return start..end
 }
 
+/** Build the sequencer timeline separately so timing can be checked without an audio device. */
+internal fun buildMidiSequence(document: TabDocument, eventRange: IntRange? = null): Sequence {
+    val sequence = Sequence(Sequence.PPQ, 480)
+    val track = sequence.createTrack()
+    addMidiShort(track, ShortMessage.PROGRAM_CHANGE, 0, 24, 0, 0L)
+    val tempoByEvent = document.tempoChanges.filter { it.eventIndex >= 0 }
+        .groupBy { it.eventIndex.coerceAtMost(document.events.size) }
+    val signatureByEvent = document.timeSignatures.filter { it.eventIndex >= 0 }
+        .groupBy { it.eventIndex.coerceAtMost(document.events.size) }
+    var tick = 0L
+
+    eventRange?.first?.let { rangeStart ->
+        document.tempoChanges
+            .filter { it.eventIndex in 0 until rangeStart }
+            .maxByOrNull { it.eventIndex }
+            ?.let { addMidiTempo(track, it.beatsPerMinute, tick) }
+    }
+
+    playbackEventIndices(document.events).filter { eventIndex -> eventRange == null || eventIndex in eventRange }.forEach { eventIndex ->
+        val event = document.events[eventIndex]
+        addMidiMarker(track, "TAB_EVENT:$eventIndex", tick)
+        tempoByEvent[eventIndex].orEmpty().forEach { addMidiTempo(track, it.beatsPerMinute, tick) }
+        signatureByEvent[eventIndex].orEmpty().forEach { addMidiTimeSignature(track, it.beats, it.beatType, tick) }
+        val soundedDurations = if (event.restDurationUnits != null) emptyList() else event.frets.indices.mapNotNull { string ->
+            val fret = event.frets[string] ?: return@mapNotNull null
+            val midiPitch = document.tuning.getOrNull(string)?.plus(fret)?.coerceIn(0, 127) ?: return@mapNotNull null
+            val units = event.durationUnits.getOrNull(string)
+                ?: event.lengthCodes.getOrNull(string)?.let(::legacyDurationUnits)
+                ?: document.divisions.coerceAtLeast(1)
+            val durationTicks = unitsToMidiTicks(units, document.divisions)
+            addMidiShort(track, ShortMessage.NOTE_ON, 0, midiPitch, 88, tick)
+            addMidiShort(track, ShortMessage.NOTE_OFF, 0, midiPitch, 0, tick + durationTicks)
+            durationTicks
+        }
+        val restTicks = event.restDurationUnits?.let { unitsToMidiTicks(it, document.divisions) }
+        tick += soundedDurations.maxOrNull() ?: restTicks ?: 480L
+    }
+    tempoByEvent[document.events.size].orEmpty().forEach { addMidiTempo(track, it.beatsPerMinute, tick) }
+    signatureByEvent[document.events.size].orEmpty().forEach { addMidiTimeSignature(track, it.beats, it.beatType, tick) }
+    addMidiMarker(track, "End of tab", tick)
+    return sequence
+}
+
+internal fun unitsToMidiTicks(units: Int, divisions: Int): Long =
+    (units.toDouble() * 480.0 / divisions.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
+
+private fun legacyDurationUnits(code: Int): Int = when (code) {
+    1 -> 1920
+    2 -> 2880
+    3 -> 960
+    4 -> 1440
+    5 -> 480
+    6 -> 720
+    7 -> 240
+    8 -> 360
+    9 -> 120
+    10 -> 180
+    11 -> 60
+    12 -> 90
+    else -> 480
+}
+
+private fun addMidiShort(track: Track, command: Int, channel: Int, data1: Int, data2: Int, tick: Long) {
+    val message = ShortMessage()
+    message.setMessage(command, channel, data1.coerceIn(0, 127), data2.coerceIn(0, 127))
+    track.add(MidiEvent(message, tick.coerceAtLeast(0L)))
+}
+
+private fun addMidiTempo(track: Track, bpm: Int, tick: Long) {
+    val micros = (60_000_000 / bpm.coerceIn(1, 1000)).coerceIn(1, 0xFFFFFF)
+    val message = MetaMessage()
+    message.setMessage(0x51, byteArrayOf((micros shr 16).toByte(), (micros shr 8).toByte(), micros.toByte()), 3)
+    track.add(MidiEvent(message, tick))
+}
+
+private fun addMidiMarker(track: Track, text: String, tick: Long) {
+    val bytes = text.encodeToByteArray()
+    val message = MetaMessage()
+    message.setMessage(0x06, bytes, bytes.size)
+    track.add(MidiEvent(message, tick))
+}
+
+private fun addMidiTimeSignature(track: Track, beats: Int, beatType: Int, tick: Long) {
+    val denominatorPower = (0..7).minByOrNull { power -> kotlin.math.abs((1 shl power) - beatType.coerceAtLeast(1)) } ?: 2
+    val message = MetaMessage()
+    message.setMessage(0x58, byteArrayOf(beats.coerceIn(1, 255).toByte(), denominatorPower.toByte(), 24, 8), 4)
+    track.add(MidiEvent(message, tick))
+}
+
 private object DesktopMidiPlayback {
-    private const val PPQ = 480
     private var sequencer: javax.sound.midi.Sequencer? = null
     private var output: DesktopMidiOutput? = null
 
@@ -167,50 +255,7 @@ private object DesktopMidiPlayback {
     fun play(document: TabDocument, speedPercent: Int, onEvent: (Int?) -> Unit, eventRange: IntRange? = null, loopCount: Int = 0) {
         stop()
         val nextSequencer = MidiSystem.getSequencer(false) ?: error("No MIDI sequencer is available.")
-        val sequence = Sequence(Sequence.PPQ, PPQ)
-        val track = sequence.createTrack()
-        addShort(track, ShortMessage.PROGRAM_CHANGE, 0, 24, 0, 0L) // Nylon-string guitar
-
-        val tempoByEvent = document.tempoChanges.filter { it.eventIndex >= 0 }
-            .groupBy { it.eventIndex.coerceAtMost(document.events.size) }
-        val signatureByEvent = document.timeSignatures.filter { it.eventIndex >= 0 }
-            .groupBy { it.eventIndex.coerceAtMost(document.events.size) }
-        var tick = 0L
-
-        // A playback range starts its MIDI sequence at tick zero, so carry forward
-        // the most recent tempo change that happened before the range begins.
-        eventRange?.first?.let { rangeStart ->
-            document.tempoChanges
-                .filter { it.eventIndex in 0 until rangeStart }
-                .maxByOrNull { it.eventIndex }
-                ?.let { addTempo(track, it.beatsPerMinute, tick) }
-        }
-
-        playbackEventIndices(document.events).filter { eventIndex -> eventRange == null || eventIndex in eventRange }.forEach { eventIndex ->
-            val event = document.events[eventIndex]
-            addMarker(track, "TAB_EVENT:$eventIndex", tick)
-            tempoByEvent[eventIndex].orEmpty().forEach { addTempo(track, it.beatsPerMinute, tick) }
-            signatureByEvent[eventIndex].orEmpty().forEach { addTimeSignature(track, it.beats, it.beatType, tick) }
-            val soundedDurations = if (event.restDurationUnits != null) emptyList() else event.frets.indices.mapNotNull { string ->
-                val fret = event.frets[string] ?: return@mapNotNull null
-                val midiPitch = document.tuning.getOrNull(string)?.plus(fret)?.coerceIn(0, 127) ?: return@mapNotNull null
-                val units = event.durationUnits.getOrNull(string)
-                    ?: event.lengthCodes.getOrNull(string)?.let(::legacyDurationUnits)
-                    ?: document.divisions.coerceAtLeast(1)
-                val durationTicks = (units.toDouble() * PPQ / document.divisions.coerceAtLeast(1)).toLong().coerceAtLeast(1L)
-                addShort(track, ShortMessage.NOTE_ON, 0, midiPitch, 88, tick)
-                addShort(track, ShortMessage.NOTE_OFF, 0, midiPitch, 0, tick + durationTicks)
-                durationTicks
-            }
-            val restTicks = event.restDurationUnits?.let { (it.toDouble() * PPQ / document.divisions.coerceAtLeast(1)).toLong().coerceAtLeast(1L) }
-            tick += soundedDurations.maxOrNull() ?: restTicks ?: PPQ.toLong()
-        }
-        tempoByEvent[document.events.size].orEmpty().forEach { addTempo(track, it.beatsPerMinute, tick) }
-        signatureByEvent[document.events.size].orEmpty().forEach { addTimeSignature(track, it.beats, it.beatType, tick) }
-        val endMarker = MetaMessage()
-        val markerText = "End of tab".encodeToByteArray()
-        endMarker.setMessage(0x06, markerText, markerText.size)
-        track.add(MidiEvent(endMarker, tick))
+        val sequence = buildMidiSequence(document, eventRange)
 
         nextSequencer.sequence = sequence
         nextSequencer.addMetaEventListener { message ->
@@ -284,46 +329,4 @@ private object DesktopMidiPlayback {
         output = null
     }
 
-    private fun addShort(track: Track, command: Int, channel: Int, data1: Int, data2: Int, tick: Long) {
-        val message = ShortMessage()
-        message.setMessage(command, channel, data1.coerceIn(0, 127), data2.coerceIn(0, 127))
-        track.add(MidiEvent(message, tick.coerceAtLeast(0L)))
-    }
-
-    private fun addTempo(track: Track, bpm: Int, tick: Long) {
-        val micros = (60_000_000 / bpm.coerceIn(1, 1000)).coerceIn(1, 0xFFFFFF)
-        val message = MetaMessage()
-        message.setMessage(0x51, byteArrayOf((micros shr 16).toByte(), (micros shr 8).toByte(), micros.toByte()), 3)
-        track.add(MidiEvent(message, tick))
-    }
-
-    private fun addMarker(track: Track, text: String, tick: Long) {
-        val bytes = text.encodeToByteArray()
-        val message = MetaMessage()
-        message.setMessage(0x06, bytes, bytes.size)
-        track.add(MidiEvent(message, tick))
-    }
-
-    private fun addTimeSignature(track: Track, beats: Int, beatType: Int, tick: Long) {
-        val denominatorPower = (0..7).minByOrNull { power -> kotlin.math.abs((1 shl power) - beatType.coerceAtLeast(1)) } ?: 2
-        val message = MetaMessage()
-        message.setMessage(0x58, byteArrayOf(beats.coerceIn(1, 255).toByte(), denominatorPower.toByte(), 24, 8), 4)
-        track.add(MidiEvent(message, tick))
-    }
-
-    private fun legacyDurationUnits(code: Int): Int = when (code) {
-        1 -> 1920
-        2 -> 2880
-        3 -> 960
-        4 -> 1440
-        5 -> 480
-        6 -> 720
-        7 -> 240
-        8 -> 360
-        9 -> 120
-        10 -> 180
-        11 -> 60
-        12 -> 90
-        else -> 480
-    }
 }
