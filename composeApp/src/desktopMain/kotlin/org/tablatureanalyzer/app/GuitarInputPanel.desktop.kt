@@ -75,7 +75,9 @@ actual fun GuitarInputPanel(
     var liveSpectrum by remember { mutableStateOf(emptyList<Float>()) }
     var sampleSaveStatus by remember { mutableStateOf("") }
     var capture by remember { mutableStateOf<DesktopGuitarCapture?>(null) }
-    var panelExpanded by remember { mutableStateOf(true) }
+    var panelExpanded by remember(mode) {
+        mutableStateOf(PlatformPreferences.get("guitarInputPanelExpanded_${mode.name}")?.toBooleanStrictOrNull() ?: true)
+    }
     var calibrationDialog by remember { mutableStateOf(false) }
     var calibrationStep by remember { mutableStateOf(0) }
     var calibrationStartedAt by remember { mutableStateOf(0L) }
@@ -313,8 +315,11 @@ actual fun GuitarInputPanel(
                     }) { Text("Save last 10 s", fontSize = 11.sp) }
                 }
                 Text(status, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp, maxLines = 1)
-                OutlinedButton(onClick = { panelExpanded = !panelExpanded }) {
-                    Text(if (panelExpanded) "Collapse" else "Expand", fontSize = 11.sp)
+                OutlinedButton(onClick = {
+                    panelExpanded = !panelExpanded
+                    PlatformPreferences.put("guitarInputPanelExpanded_${mode.name}", panelExpanded.toString())
+                }) {
+                    Text(if (panelExpanded) "Hide controls" else "Show controls", fontSize = 11.sp)
                 }
             }
             if (panelExpanded) {
