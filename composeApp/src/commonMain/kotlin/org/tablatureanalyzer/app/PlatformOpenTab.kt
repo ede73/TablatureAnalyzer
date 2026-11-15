@@ -3,7 +3,7 @@ package org.tablatureanalyzer.app
 import androidx.compose.runtime.Composable
 
 @Composable
-expect fun PlatformOpenTabButton(onText: (String) -> Unit)
+expect fun PlatformOpenTabButton(onBytes: (ByteArray) -> Unit)
 
 @Composable
 expect fun PlatformSaveMusicXmlButton(contents: String)

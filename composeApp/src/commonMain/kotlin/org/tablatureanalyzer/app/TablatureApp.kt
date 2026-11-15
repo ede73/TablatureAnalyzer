@@ -148,6 +148,7 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
     var showImport by remember { mutableStateOf(false) }
     var importText by remember { mutableStateOf("") }
     var importError by remember { mutableStateOf<String?>(null) }
+    var openError by remember { mutableStateOf<String?>(null) }
     var showNewTabConfirmation by remember { mutableStateOf(false) }
     var openTabControlsRequest by remember { mutableIntStateOf(0) }
     var playingEventIndex by remember { mutableIntStateOf(-1) }
@@ -188,7 +189,11 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                             if (hasContent) showNewTabConfirmation = true
                             else loadDocument(TabDocument(document.tuning, emptyList()))
                         }) { Text("New") }
-                        PlatformOpenTabButton(onText = { text -> loadDocument(TabCodec.parse(text)) })
+                        PlatformOpenTabButton(onBytes = { bytes ->
+                            runCatching { TabCodec.parse(bytes) }
+                                .onSuccess(::loadDocument)
+                                .onFailure { openError = it.message ?: "Could not read this file." }
+                        })
                         OutlinedButton(onClick = { showImport = true }) { Text("Paste") }
                         PlatformSaveProjectButton(TabCodec.encodeInternal(document))
                         PlatformSaveMusicXmlButton(MusicXmlCodec.encode(document))
@@ -377,6 +382,14 @@ fun TablatureApp(initialDocument: TabDocument? = null) {
                     }) { Text("Clear tab") }
                 },
                 dismissButton = { TextButton(onClick = { showNewTabConfirmation = false }) { Text("Cancel") } }
+            )
+        }
+        openError?.let { message ->
+            AlertDialog(
+                onDismissRequest = { openError = null },
+                title = { Text("Could not open file") },
+                text = { Text(message) },
+                confirmButton = { TextButton(onClick = { openError = null }) { Text("OK") } }
             )
         }
         }
