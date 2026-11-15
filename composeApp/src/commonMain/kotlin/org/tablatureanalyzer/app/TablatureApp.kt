@@ -1,5 +1,7 @@
 package org.tablatureanalyzer.app
 
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,7 +41,9 @@ import androidx.compose.ui.input.key.isMetaPressed
 import androidx.compose.ui.input.key.isShiftPressed
 import androidx.compose.ui.input.key.onKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
@@ -451,12 +455,29 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
     var durationPreview by remember { mutableStateOf<Pair<NotePosition, Int>?>(null) }
     val editorFocusRequester = remember { FocusRequester() }
     val staffScrollState = rememberScrollState()
+    var staffViewportTopInRoot by remember { mutableFloatStateOf(0f) }
+    var staffCanvasTopInRoot by remember { mutableFloatStateOf(0f) }
+    val anticipationGlow = remember { Animatable(0f) }
+    val nextPlaybackEventIndex = remember(document.events, playingEventIndex) {
+        if (playingEventIndex < 0) -1 else
+            ((playingEventIndex + 1)..document.events.lastIndex).firstOrNull { index ->
+                val event = document.events[index]
+                event.restDurationUnits == null && event.frets.any { it != null }
+            } ?: -1
+    }
+    LaunchedEffect(playingEventIndex) {
+        if (playingEventIndex >= 0) {
+            anticipationGlow.snapTo(0.12f)
+            anticipationGlow.animateTo(0.72f, tween(durationMillis = 420))
+        } else {
+            anticipationGlow.snapTo(0f)
+        }
+    }
     val mobileControlsDrawer = rememberDrawerState(initialValue = DrawerValue.Closed)
     val coroutineScope = rememberCoroutineScope()
     LaunchedEffect(openControlsRequest) {
         if (phoneLayout && openControlsRequest > 0) mobileControlsDrawer.open()
     }
-    var lastFollowedSystem by remember { mutableIntStateOf(-1) }
     fun applyFretLimitEdit(operation: GroupFretOperation, input: String) {
         val limit = input.toIntOrNull()?.takeIf { it in 0..36 } ?: return
         if (selectedNotes.isEmpty()) return
@@ -679,7 +700,12 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
             colors = CardDefaults.cardColors(containerColor = surface),
             shape = RoundedCornerShape(16.dp)
         ) {
-            Column(Modifier.fillMaxWidth().verticalScroll(staffScrollState).padding(if (document.events.isEmpty()) 10.dp else 16.dp)) {
+            Column(
+                Modifier.fillMaxWidth()
+                    .onGloballyPositioned { staffViewportTopInRoot = it.positionInRoot().y }
+                    .verticalScroll(staffScrollState)
+                    .padding(if (document.events.isEmpty()) 10.dp else 16.dp)
+            ) {
                 if (!phoneLayout) {
                     Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically) {
                         NamingSelector("Tab names", namingOverride, inherited = naming, onSelect = onNamingOverride)
@@ -744,28 +770,41 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                         val columnsPerSystem = ((constraints.maxWidth.toFloat() - leftPx - with(density) { 8.dp.toPx() }) / colGapPx).toInt().coerceAtLeast(1)
                         val systems = ((document.events.size + columnsPerSystem - 1) / columnsPerSystem).coerceAtLeast(1)
                         val systemHeight = maxOf(206.dp, 52.dp + 32.dp * (document.tuning.size - 1))
-                        LaunchedEffect(playingEventIndex, columnsPerSystem, systemHeight) {
+                        LaunchedEffect(
+                            playingEventIndex,
+                            columnsPerSystem,
+                            systemHeight,
+                            staffViewportTopInRoot,
+                            staffCanvasTopInRoot,
+                            staffScrollState.viewportSize
+                        ) {
                             val activeSystem = if (playingEventIndex < 0) -1 else (playingEventIndex / columnsPerSystem).coerceIn(0, systems - 1)
-                            if (activeSystem < 0) {
-                                lastFollowedSystem = -1
-                            } else if (activeSystem != lastFollowedSystem) {
-                                lastFollowedSystem = activeSystem
+                            if (activeSystem >= 0 && staffScrollState.viewportSize > 0) {
                                 val systemHeightPx = with(density) { systemHeight.roundToPx() }
-                                val canvasTopPx = with(density) { 52.dp.roundToPx() }
-                                val systemTop = canvasTopPx + activeSystem * systemHeightPx
+                                // Measure the canvas in the actual scroll viewport instead of
+                                // guessing its top offset. The guess differed between desktop,
+                                // tablet, and phone layouts and could leave the playing system
+                                // clipped or fail to scroll at all.
+                                val canvasTopInScrollContent =
+                                    (staffCanvasTopInRoot - staffViewportTopInRoot + staffScrollState.value).roundToInt()
+                                val systemTop = canvasTopInScrollContent + activeSystem * systemHeightPx
                                 val systemBottom = systemTop + systemHeightPx
                                 val viewportTop = staffScrollState.value
                                 val viewportBottom = viewportTop + staffScrollState.viewportSize
-                                val bottomClearance = with(density) { 24.dp.roundToPx() }
+                                val clearance = with(density) { 12.dp.roundToPx() }
                                 val target = when {
-                                    systemTop < viewportTop -> systemTop
-                                    systemBottom > viewportBottom -> systemBottom - staffScrollState.viewportSize + bottomClearance
-                                    else -> viewportTop
-                                }.coerceAtLeast(0)
-                                if (target != viewportTop) staffScrollState.animateScrollTo(target)
+                                    systemTop < viewportTop + clearance -> systemTop - clearance
+                                    systemBottom > viewportBottom - clearance -> systemBottom - staffScrollState.viewportSize + clearance
+                                    else -> null
+                                }?.coerceAtLeast(0)
+                                // Do not animate from a LaunchedEffect keyed by every MIDI event:
+                                // the next note cancels the previous animation before it finishes.
+                                // An immediate correction keeps the currently playing system in view.
+                                if (target != null && target != viewportTop) staffScrollState.scrollTo(target)
                             }
                         }
                         Canvas(Modifier.fillMaxWidth().height(systemHeight * systems)
+                            .onGloballyPositioned { staffCanvasTopInRoot = it.positionInRoot().y }
                             .focusRequester(editorFocusRequester)
                             .focusable()
                             .onKeyEvent { keyEvent ->
@@ -1108,16 +1147,49 @@ private fun EditorPage(document: TabDocument, selectedEvent: Int, selectedString
                                         val action = event.actions.getOrNull(s)
                                         // The notehead circle already delimits the fret; do not add notation parentheses.
                                         val noteLabel = (if (fretPreview) dragTargetFret else fret).toString()
-                                        val radius = 14.dp.toPx()
-                                        val noteFill = when { fretPreview || selected -> selection; dropTarget -> surfaceRaised; chosen -> green; else -> surfaceRaised }
-                                        val noteOutline = when { fretPreview || selected || dropTarget || chosen -> green; else -> line }
-                                        val originAlpha = if (verticalMovePreview) 0.30f else 1f
-                                        drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
-                                        drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (selected || fretPreview) 2.5f else 1.5f))
-                                        if (playingEventIndex == i) {
-                                            drawCircle(highlight, radius = 4.dp.toPx(), center = Offset(x - radius - 5.dp.toPx(), y))
+                                        val isPlaying = playingEventIndex == i
+                                        val isNextToPlay = nextPlaybackEventIndex == i
+                                        val normalRadius = 14.dp.toPx()
+                                        val radius = when {
+                                            isPlaying -> 22.dp.toPx()
+                                            // Grow the upcoming fret during the current note so its
+                                            // number is readable at a glance on narrow phone screens.
+                                            isNextToPlay -> (18f + anticipationGlow.value * 10f).dp.toPx()
+                                            else -> normalRadius
                                         }
-                                        drawText(textMeasurer, noteLabel, Offset(x - if (noteLabel.length > 2) 11.dp.toPx() else 5.dp.toPx(), y - 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = 11.sp, fontWeight = FontWeight.Bold))
+                                        val noteFill = when {
+                                            isPlaying -> highlight
+                                            isNextToPlay -> selection
+                                            fretPreview || selected -> selection
+                                            dropTarget -> surfaceRaised
+                                            chosen -> green
+                                            else -> surfaceRaised
+                                        }
+                                        val noteOutline = when {
+                                            isPlaying || isNextToPlay || fretPreview || selected || dropTarget || chosen -> highlight
+                                            else -> line
+                                        }
+                                        val originAlpha = if (verticalMovePreview) 0.30f else 1f
+                                        if (isPlaying) {
+                                            drawCircle(highlight.copy(alpha = 0.28f), radius = radius + 9.dp.toPx(), center = Offset(x, y))
+                                        } else if (isNextToPlay) {
+                                            drawCircle(highlight.copy(alpha = anticipationGlow.value), radius = radius + 8.dp.toPx(), center = Offset(x, y))
+                                        }
+                                        drawCircle(noteFill.copy(alpha = originAlpha), radius = radius, center = Offset(x, y))
+                                        drawCircle(noteOutline.copy(alpha = originAlpha), radius = radius, center = Offset(x, y), style = androidx.compose.ui.graphics.drawscope.Stroke(width = if (isPlaying || selected || fretPreview) 3.dp.toPx() else 1.8.dp.toPx()))
+                                        val labelFontSize = when {
+                                            isPlaying -> 17.sp
+                                            isNextToPlay -> (14f + anticipationGlow.value * 7f).sp
+                                            else -> 11.sp
+                                        }
+                                        val labelHalfWidth = when {
+                                            noteLabel.length > 2 && isPlaying -> 14.dp.toPx()
+                                            noteLabel.length > 2 -> 11.dp.toPx()
+                                            isPlaying -> 6.dp.toPx()
+                                            isNextToPlay -> 8.dp.toPx()
+                                            else -> 5.dp.toPx()
+                                        }
+                                        drawText(textMeasurer, noteLabel, Offset(x - labelHalfWidth, y - if (isPlaying) 11.dp.toPx() else 8.dp.toPx()), style = TextStyle(color = ink.copy(alpha = originAlpha), fontSize = labelFontSize, fontWeight = FontWeight.Bold))
                                         if (verticalMovePreview && dragTargetFret in 0..36) {
                                             val previewY = top + 26.dp.toPx() + rowGap * dragTargetString
                                             val targetEmpty = event.frets.getOrNull(dragTargetString) == null
