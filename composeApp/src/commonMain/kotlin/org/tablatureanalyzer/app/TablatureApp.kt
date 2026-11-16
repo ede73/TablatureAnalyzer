@@ -2035,9 +2035,11 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
                 }
                 Spacer(Modifier.height(8.dp))
                 val noteSet = scale.steps.map { (it + key) % 12 }.toSet()
-                Canvas(Modifier.fillMaxWidth().height((tuning.size * 44 + 26).dp)) {
+                Canvas(Modifier.fillMaxWidth().height((tuning.size * 54 + 26).dp)) {
                     val gapY = size.height / (tuning.size + 1)
                     val gapX = size.width / 14f
+                    val nodeRadius = minOf(18.dp.toPx(), gapX * 0.4f, gapY * 0.4f)
+                    val noteTextStyle = TextStyle(color = paper, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     for (s in tuning.indices) {
                         val y = gapY * (s + 1)
                         drawLine(line, Offset(0f, y), Offset(size.width, y), 1.4f)
@@ -2048,8 +2050,16 @@ private fun ScalePage(tuning: List<Int>, database: ChordDatabase, databaseLoaded
                                 val x = gapX * (fret + 1)
                                 val mainOctave = mainOctaveRoot?.let { pitch >= it.first && pitch < it.first + 12 } == true
                                 val noteColor = if (mainOctave) highlight else if (fret == 0) surfaceRaised else green
-                                drawCircle(noteColor, 12.dp.toPx(), Offset(x, y))
-                                drawText(textMeasurer, noteName(pitchClass, naming), Offset(x - 7.dp.toPx(), y - 6.dp.toPx()), style = TextStyle(color = if (fret == 0 && !mainOctave) ink else paper, fontSize = 9.sp, fontWeight = FontWeight.Bold))
+                                drawCircle(noteColor, nodeRadius, Offset(x, y))
+                                val noteText = noteName(pitchClass, naming)
+                                val noteLayout = textMeasurer.measure(
+                                    text = noteText,
+                                    style = noteTextStyle.copy(color = if (fret == 0 && !mainOctave) ink else paper),
+                                )
+                                drawText(
+                                    noteLayout,
+                                    topLeft = Offset(x - noteLayout.size.width / 2f, y - noteLayout.size.height / 2f),
+                                )
                             }
                         }
                     }
